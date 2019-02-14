@@ -9,6 +9,8 @@
 #include <algorithm>
 #include <functional>
 #include <iostream>
+#include <variant>
+#include <cassert>
 
 namespace cppc
 {
@@ -102,9 +104,44 @@ namespace cppc
         template <typename = void> void setValueField(const ENUM& t){ value = t; }
     };
 
+    struct ConfigData final {
+        std::variant<std::string, double, bool> value;
+
+        std::string toString() const {
+            switch (value.index()){
+                case 0: return std::get<std::string>(value);
+                case 1: return std::to_string(std::get<double>(value));
+                case 2: return std::to_string(std::get<bool>(value));
+                default: assert(false); return "";
+            }
+        }
+
+        static std::optional<ConfigData> parse(const std::string& s){
+            if (s[0] == '"'){
+                auto found = std::find(s.begin()+1, s.end(), '"');
+                if (found == s.end()-1) return {{std::string{s.begin()+1, s.end()-1}}};
+                else return std::nullopt;
+            }
+
+            auto upper = s;
+            std::transform(upper.begin(), upper.end(), upper.begin(), [](auto c){return toupper(c);});
+            if (upper == "TRUE") return {{true}};
+            else if (upper == "FALSE") return {{false}};
+
+            char* end = nullptr;
+            double d = std::strtod(s.c_str(), &end);
+            if (end == &s[0] + s.length()) return {{d}};
+
+            return std::nullopt;
+        }
+
+        template <typename T> T getValueField() const { return std::get<T>(value); }
+        template <typename T> void setValueField(const T& t){ value = t; }
+    };
+
     // Represents a collection of grouped key-value pairs.
     // The template parameters defines the enums used to access the values, and stored data type.
-    template <typename GROUP, typename NAME, typename DATA, GROUP GROUP_SIZE = GROUP::_SIZE, NAME NAME_SIZE = NAME::_SIZE>
+    template <typename GROUP, typename NAME, typename DATA = ConfigData, GROUP GROUP_SIZE = GROUP::_SIZE, NAME NAME_SIZE = NAME::_SIZE>
     class Config final {
     public:
         using GroupName = GROUP;
@@ -172,10 +209,12 @@ namespace cppc
             return *this;
         }
 
-        Config& load(const Config& config) {
+        Config& load(const Config& config, bool overwrite) {
             for (size_t i = 0; i < static_cast<size_t>(GROUP_SIZE); ++i){
                 for (size_t j = 0; j < static_cast<size_t>(NAME_SIZE); ++j){
-                    if (config.configValues[i][j]){
+                    if (overwrite && config.configValues[i][j]){
+                        configValues[i][j] = config.configValues[i][j];
+                    } else if (!overwrite && config.configValues[i][j] && !configValues[i][j]) {
                         configValues[i][j] = config.configValues[i][j];
                     }
                 }

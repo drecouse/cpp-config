@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.7)
 project(cpp_config)
-set(CMAKE_CXX_STANDARD 20)
-add_executable(cpp_config main.cpp)
+set(CMAKE_CXX_STANDARD 17)
+add_executable(cpp_config main.cpp examples/e1.cpp examples/e2.cpp)
 include_directories(include)
