@@ -14,6 +14,7 @@ enum class WindowMode {
 
 struct ConfigData {
     std::variant<int, cppc::EnumeratedData<WindowMode>> value;
+    using AvailableValueTypes = std::tuple<int, cppc::EnumeratedData<WindowMode>>;
 
     std::string toString() const {
         switch (value.index()){
@@ -69,11 +70,12 @@ void example1()
         }
     });
 
-    cppc::Config<ConfigGroup, ConfigID, ConfigData> c("examples/config1.ini");
+    cppc::Config<ConfigID, ConfigData> c("examples/config1.ini");
 
-    switch (c.get<WindowMode>(ConfigGroup::GENERAL, ConfigID::MODE).value()){
+    switch (c.get<WindowMode>(ConfigID::MODE)){
         case WindowMode::FULLSCREEN: std::cout << "fullscreen mode" << std::endl; break;
         case WindowMode::WINDOWED: std::cout << "windowed mode" << std::endl; break;
         case WindowMode::WINDOWED_FULLSCREEN: std::cout << "windowed fullscreen mode" << std::endl; break;
+        default: break;
     }
 }
