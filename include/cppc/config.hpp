@@ -1,15 +1,17 @@
 #ifndef CPP_CONFIG_CONFIG_HPP
 #define CPP_CONFIG_CONFIG_HPP
 
-#include <array>
-#include <unordered_map>
-#include <vector>
-#include <optional>
+#include <iostream>
 #include <fstream>
+#include <array>
+#include <vector>
+#include <unordered_map>
+#include <string>
+#include <optional>
+#include <variant>
 #include <algorithm>
 #include <functional>
-#include <iostream>
-#include <variant>
+#include <type_traits>
 #include <cassert>
 
 namespace cppc
@@ -30,10 +32,10 @@ namespace cppc
 
         inline void trim(std::string &s) {
             s.erase(s.begin(), std::find_if(s.begin(), s.end(), [](int ch) {
-                return !std::isspace(ch);
+                return !isspace(ch);
             }));
             s.erase(std::find_if(s.rbegin(), s.rend(), [](int ch) {
-                return !std::isspace(ch);
+                return !isspace(ch);
             }).base(), s.end());
         }
 
@@ -193,7 +195,7 @@ namespace cppc
                     , configName{configName}
             {}
             operator T() const { return config.get<T>(groupName, configName); }
-            void update(const T& t) { config.template set<T>(groupName, configName, t); }
+            void update(const T& t) { config.set<T>(groupName, configName, t); }
         private:
             ConfigImpl& config;
             typename ConfigImpl::GroupName groupName;
@@ -344,8 +346,12 @@ namespace cppc
         T get(GroupName groupName, ConfigName configName) const {
             static_assert(isConvertibleFrom<T>::value, "incompatible types");
             try {
+#ifdef _MSC_VER
+                return T(getOptionalData(groupName, configName).value().getValueField<typename isConvertibleFrom<T>::type>());
+#else
                 return T(getOptionalData(groupName, configName).value().template getValueField<typename isConvertibleFrom<T>::type>());
-            } catch (const std::bad_optional_access& e) {
+#endif
+            } catch (const std::bad_optional_access&) {
                 throw std::runtime_error("<" + toString(groupName) + ", " + toString(configName) + "> is not found!");
             } catch (...) {
                 throw std::runtime_error("<" + toString(groupName) + ", " + toString(configName) + "> is accessed with bad type!");
@@ -362,7 +368,11 @@ namespace cppc
             static_assert(isConvertibleFrom<T>::value, "incompatible types");
             auto& opt = getOptionalData(groupName, configName);
             try {
+#ifdef _MSC_VER
+                return opt ? std::make_optional(T(opt.value().getValueField<typename isConvertibleFrom<T>::type>())) : std::nullopt;
+#else
                 return opt ? std::make_optional(T(opt.value().template getValueField<typename isConvertibleFrom<T>::type>())) : std::nullopt;
+#endif
             } catch (...) {
                 throw std::runtime_error("<" + toString(groupName) + ", " + toString(configName) + "> is accessed with bad type!");
             }
@@ -377,7 +387,12 @@ namespace cppc
         std::optional<T> mustGet(GroupName groupName, ConfigName configName) const noexcept {
             auto& opt = getOptionalData(groupName, configName);
             try {
+#ifdef _MSC_VER
+                return opt ? std::make_optional(opt.value().getValueField<T>()) : std::nullopt;
+#else
                 return opt ? std::make_optional(opt.value().template getValueField<T>()) : std::nullopt;
+#endif
+
             } catch (...) {
                 return std::nullopt;
             }
@@ -407,7 +422,7 @@ namespace cppc
             if (!opt){
                 opt = DataType{(typename isConvertibleTo<T>::type)t};
             } else {
-                opt.value().template setValueField((typename isConvertibleTo<T>::type)t);
+                opt.value().setValueField((typename isConvertibleTo<T>::type)t);
             }
         }
 
