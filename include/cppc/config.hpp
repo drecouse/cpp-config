@@ -13,6 +13,8 @@
 #include <functional>
 #include <type_traits>
 #include <cassert>
+#include <sstream>
+#include <string_view>
 
 namespace cppc
 {
@@ -37,6 +39,24 @@ namespace cppc
             s.erase(std::find_if(s.rbegin(), s.rend(), [](int ch) {
                 return !isspace(ch);
             }).base(), s.end());
+        }
+
+        inline std::string_view trim(std::string_view s) {
+            s.remove_prefix(std::min(s.find_first_not_of(" "), s.size()));
+            s.remove_suffix(std::min(s.size() - s.find_last_not_of(" ") - 1, s.size()));
+            return s;
+        }
+
+        template<typename S, std::size_t...Is, typename TUPLE>
+        S ToStruct(std::index_sequence<Is...>, TUPLE&& tuple) {
+            return S{std::get<Is>(std::forward<TUPLE>(tuple))...};
+        }
+        template<typename S, typename TUPLE>
+        S ToStruct(TUPLE&& tuple) {
+            return ToStruct<S>(
+                std::make_index_sequence<std::tuple_size<std::remove_reference_t<TUPLE>>{}>{},
+                std::forward<TUPLE>(tuple)
+            );
         }
 
         template <typename T, typename Head, typename... Tail> struct contains :
@@ -83,8 +103,85 @@ namespace cppc
         template <typename T, typename TUPLE> struct IsConvertibleFromSomethingIn;
         template <typename T, typename... TYPES> struct IsConvertibleFromSomethingIn<T, std::tuple<TYPES...>> :
         IsConvertibleFromSomethingIn_impl<T, TYPES...> {};
-    }
 
+        template <typename T>
+        struct Parse {
+            static std::optional<T> work(std::string_view s);
+        };
+
+        template <>
+        struct Parse<std::string> {
+            static std::optional<std::string> work(std::string_view s){
+                s = detail::trim(s);
+                if (s[0] == '"'){
+                    auto found = std::find(s.begin()+1, s.end(), '"');
+                    if (found == s.end()-1) return {{std::string{s.begin()+1, s.end()-1}}};
+                }
+                return std::nullopt;
+            }
+        };
+
+        template <>
+        struct Parse<double> {
+            static std::optional<double> work(std::string_view s){
+                s = detail::trim(s);
+                auto str = std::string(s);
+                char* end = nullptr;
+                double d = std::strtod(str.c_str(), &end);
+                if (end == &str[0] + str.length()) return {d};
+                return std::nullopt;
+            }
+        };
+
+        template <>
+        struct Parse<bool> {
+            static std::optional<bool> work(std::string_view s){
+                s = detail::trim(s);
+                auto upper = std::string(s);
+                std::transform(upper.begin(), upper.end(), upper.begin(), [](auto c){return toupper(c);});
+                if (upper == "TRUE") return {{true}};
+                else if (upper == "FALSE") return {{false}};
+                return std::nullopt;
+            }
+        };
+
+        template <size_t I, typename TUPLE>
+        struct StringConverter {
+            static void toString(std::stringstream& ss, const TUPLE& data){
+                StringConverter<I-1, TUPLE>::toString(ss, data);
+                ss <<  ", " << std::get<I>(data);
+            }
+
+            static bool parse(std::string_view sv, TUPLE& data){
+                sv = detail::trim(sv);
+                int commaIndex = sv.rfind(',');
+                auto psv = sv.substr(commaIndex + 1, sv.size() - commaIndex);
+                auto value = Parse<typename std::tuple_element<I, TUPLE>::type>::work(psv);
+                if (value){
+                    std::get<I>(data) = value.value();
+                    return StringConverter<I-1, TUPLE>::parse(sv.substr(0, commaIndex), data);
+                }
+                return false;
+            }
+        };
+
+        template <typename TUPLE>
+        struct StringConverter<0, TUPLE> {
+            static void toString(std::stringstream& ss, const TUPLE& data){
+                ss << std::get<0>(data);
+            }
+
+            static bool parse(std::string_view sv, TUPLE& data){
+                sv = detail::trim(sv);
+                auto value = Parse<typename std::tuple_element<0, TUPLE>::type>::work(sv);
+                if (value){
+                    std::get<0>(data) = value.value();
+                    return true;
+                }
+                return false;
+            }
+        };
+    }
 
     // Generates the global accelerating structures used during the parsing process for an enum type.
     // Must be called before using the library with that enum.
@@ -114,11 +211,56 @@ namespace cppc
         }();
     }
 
+    // Helper struct to easily compose complex data structures for configuration values
+    template <typename... T>
+    struct ComplexData final {
+        std::tuple<T...> values;
+
+        template <typename R>
+        operator R() const { return detail::ToStruct<R>(values); }
+
+        std::string toString() const {
+            std::stringstream ss;
+            ss << std::boolalpha << "{ ";
+            detail::StringConverter<std::tuple_size<std::tuple<T...>>::value-1, std::tuple<T...>>::toString(ss, values);
+            ss << " }";
+            return ss.str();
+        }
+
+        static std::optional<ComplexData> parse(std::string_view s) {
+            ComplexData<T...> data;
+            if (s.front() != '{' || s.back() != '}') return std::nullopt;
+            s = s.substr(1, s.size()-2);
+            bool valid = detail::StringConverter<std::tuple_size<std::tuple<T...>>::value-1, std::tuple<T...>>::parse(s, data.values);
+            if (valid) return {data};
+            return std::nullopt;
+        }
+    };
+
+    template <typename... T>
+    std::ostream& operator<<(std::ostream& os, const ComplexData<T...>& data){
+        os << data.toString();
+        return os;
+    }
+
+    namespace detail {
+        template <typename... T>
+        struct Parse<ComplexData<T...>> {
+            static std::optional<ComplexData<T...>> work(std::string_view s){
+                s = detail::trim(s);
+                auto data = ComplexData<T...>::parse(s);
+                if (data) return data;
+                return std::nullopt;
+            }
+        };
+    }
+
     // Helper struct to use typed enums for configuration values as well
     template <typename ENUM, ENUM SIZE = ENUM::_SIZE>
     struct EnumeratedData final {
         ENUM value;
 
+        EnumeratedData() = default;
         EnumeratedData(ENUM value) : value{value} {}
         operator ENUM() const { return value; }
 
@@ -126,18 +268,31 @@ namespace cppc
             return detail::getTypeToName<ENUM, SIZE>()[static_cast<size_t>(value)];
         }
 
-        static std::optional<EnumeratedData> parse(const std::string& s) {
+        static std::optional<EnumeratedData> parse(std::string_view s) {
             auto& map = detail::getNameToType<ENUM, SIZE>();
-            auto found = map.find(s);
+            auto found = map.find(std::string(s));
             if (found == map.end()) return std::nullopt;
             else return std::make_optional(EnumeratedData{found->second});
         }
-
-        template <typename T, typename = void> T getValueField() const;
-        template <typename = void> ENUM getValueField() const { return value; }
-        template <typename T, typename = void> void setValueField(const T& e);
-        template <typename = void> void setValueField(const ENUM& e){ value = e; }
     };
+
+    template <typename ENUM, ENUM SIZE = ENUM::_SIZE>
+    std::ostream& operator<<(std::ostream& os, const EnumeratedData<ENUM, SIZE>& data){
+        os << data.toString();
+        return os;
+    }
+
+    namespace detail {
+        template <typename ENUM, ENUM SIZE>
+        struct Parse<EnumeratedData<ENUM, SIZE>> {
+            static std::optional<EnumeratedData<ENUM, SIZE>> work(std::string_view s){
+                s = detail::trim(s);
+                auto data = EnumeratedData<ENUM, SIZE>::parse(s);
+                if (data) return data;
+                return std::nullopt;
+            }
+        };
+    }
 
     // Default data storage class, supports strings, doubles and booleans
     struct ConfigData final {
@@ -148,26 +303,20 @@ namespace cppc
             switch (value.index()){
                 case 0: return std::get<std::string>(value);
                 case 1: return std::to_string(std::get<double>(value));
-                case 2: return std::to_string(std::get<bool>(value));
+                case 2: return std::get<bool>(value) ? "true" : "false";
                 default: assert(false); return "";
             }
         }
 
         static std::optional<ConfigData> parse(const std::string& s){
-            if (s[0] == '"'){
-                auto found = std::find(s.begin()+1, s.end(), '"');
-                if (found == s.end()-1) return {{std::string{s.begin()+1, s.end()-1}}};
-                else return std::nullopt;
-            }
+            auto os = detail::Parse<std::string>::work(s);
+            if (os) return {{os.value()}};
 
-            auto upper = s;
-            std::transform(upper.begin(), upper.end(), upper.begin(), [](auto c){return toupper(c);});
-            if (upper == "TRUE") return {{true}};
-            else if (upper == "FALSE") return {{false}};
+            auto ob = detail::Parse<bool>::work(s);
+            if (ob) return {{ob.value()}};
 
-            char* end = nullptr;
-            double d = std::strtod(s.c_str(), &end);
-            if (end == &s[0] + s.length()) return {{d}};
+            auto od = detail::Parse<double>::work(s);
+            if (od) return {{od.value()}};
 
             return std::nullopt;
         }
@@ -307,12 +456,13 @@ namespace cppc
         bool save(const std::string& filePath) const {
             std::ofstream f(filePath);
             if (!f) return false;
+            f << std::boolalpha;
 
             for (size_t i = 0; i < static_cast<size_t>(GROUP_SIZE); ++i){
                 f << '[' << toString(static_cast<GroupName >(i)) << ']' << '\n';
                 for (size_t j = 0; j < static_cast<size_t>(NAME_SIZE); ++j){
                     if (configValues[i][j]){
-                        f << toString(static_cast<ConfigName >(j)) << "=" << configValues[i][j].value().toString() << '\n';
+                        f << toString(static_cast<ConfigName>(j)) << "=" << configValues[i][j].value().toString() << '\n';
                     }
                 }
                 f << '\n';
