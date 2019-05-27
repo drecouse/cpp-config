@@ -1,7 +1,7 @@
 #include <cppc/config.hpp>
 
 enum class ConfigGroup {
-    GENERAL, _SIZE
+    GENERAL, VIDEO, _SIZE
 };
 
 enum class ConfigID {
@@ -53,6 +53,7 @@ template <> WindowMode ConfigData::getValueField() const {
 
 void example1()
 {
+    /*
     cppc::configure<ConfigGroup>([](auto m){
         switch (m){
             case ConfigGroup::GENERAL: return "general";
@@ -79,7 +80,11 @@ void example1()
         }
     });
 
-    cppc::Config<ConfigID, ConfigData> c("examples/config1.ini");
+
+    cppc::ConfigImpl<ConfigGroup, ConfigID, cppc::detail::AutoConverter<cppc::ConfigImpl<ConfigID, ConfigData, ConfigID::_SIZE>>>
+    ConfigImpl<Group, std::variant<ConfigImpl<Id1, Data1>, ConfigImpl<Id2, Data2>>>
+
+    cppc::EnumMap<ConfigID, ConfigData> c("examples/config1.ini");
 
     c[ConfigID::MODE] = WindowMode::WINDOWED;
 
@@ -96,4 +101,5 @@ void example1()
     }
 
     c.save("config11.ini");
+*/
 }

@@ -4,9 +4,9 @@ enum class ConfigGroup {
     GENERAL, RENDER, CAMERA, _SIZE
 };
 
-enum class ConfigID {
-    WIDTH, HEIGHT, QUALITY, FULLSCREEN, SPEED, _SIZE
-};
+enum class GeneralID { SPEED, _SIZE };
+enum class RenderID { QUALITY, FULLSCREEN, _SIZE };
+enum class CameraID { WIDTH, HEIGHT, SPEED, _SIZE };
 
 void example2()
 {
@@ -19,17 +19,58 @@ void example2()
         }
     });
 
-    cppc::configure<ConfigID>([](auto e){
+    cppc::configure<GeneralID>([](auto e){
         switch (e){
-            case ConfigID::WIDTH: return "width";
-            case ConfigID::HEIGHT: return "height";
-            case ConfigID::QUALITY: return "quality";
-            case ConfigID::FULLSCREEN: return "fullscreen";
-            case ConfigID::SPEED: return "speed";
+            case GeneralID::SPEED: return "speed";
             default: assert(false); return "";
         }
     });
 
+    cppc::configure<RenderID>([](auto e){
+        switch (e){
+            case RenderID::QUALITY: return "quality";
+            case RenderID::FULLSCREEN: return "fullscreen";
+            default: assert(false); return "";
+        }
+    });
+
+    cppc::configure<CameraID>([](auto e){
+        switch (e){
+            case CameraID::WIDTH: return "width";
+            case CameraID::HEIGHT: return "height";
+            case CameraID::SPEED: return "speed";
+            default: assert(false); return "";
+        }
+    });
+
+    cppc::detail::ConfigImpl<
+            ConfigGroup,
+            std::pair<GeneralID, cppc::DefaultConfigData>,
+            std::pair<RenderID, cppc::DefaultConfigData>,
+            std::pair<CameraID, cppc::DefaultConfigData>
+    > config("examples/config2.ini");
+
+    config[std::pair{ConfigGroup::GENERAL, GeneralID::SPEED}] = 11.2;
+
+    std::string str = config[ConfigGroup::RENDER][RenderID::QUALITY];
+
+    int speed2 = config[ConfigGroup::CAMERA][CameraID::SPEED];
+
+    config.clear(ConfigGroup::RENDER, RenderID::QUALITY);
+
+    auto speed = config.bind<double>(ConfigGroup::CAMERA, CameraID::SPEED);
+    std::cout << speed << std::endl;
+    speed.update(30);
+
+    std::cout << config.get<bool>(ConfigGroup::RENDER, RenderID::FULLSCREEN) << std::endl;
+
+
+
+    config.save("config22.ini");
+    config.clear();
+    return;
+
+/*
     cppc::Config<ConfigGroup, ConfigID> config("examples/config2.ini");
 
     std::cout << "Camera speed = " << config.get<double>(ConfigGroup::CAMERA, ConfigID::SPEED) << std::endl;
@@ -49,5 +90,12 @@ void example2()
 
     config.save("config22.ini");
     config.clear();
+    */
 }
+
+
+
+
+
+
 

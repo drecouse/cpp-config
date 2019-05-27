@@ -47,10 +47,19 @@ namespace cppc
             return s;
         }
 
+        template <typename... T>
+        struct AutoConverter : public std::variant<T...> {
+            template <typename R>
+            operator R&() {
+                return std::get<R>(*this);
+            }
+        };
+
         template<typename S, std::size_t...Is, typename TUPLE>
         S ToStruct(std::index_sequence<Is...>, TUPLE&& tuple) {
             return S{std::get<Is>(std::forward<TUPLE>(tuple))...};
         }
+
         template<typename S, typename TUPLE>
         S ToStruct(TUPLE&& tuple) {
             return ToStruct<S>(
@@ -59,6 +68,50 @@ namespace cppc
             );
         }
 
+/*
+        template<size_t N> struct ToTupleImpl;
+        template<> struct ToTupleImpl<2> {
+            template<typename S> auto operator()(S&& s) const {
+                auto[e0, e1] = std::forward<S>(s);
+                return std::make_tuple(e0, e1);
+            }
+        };
+        template<> struct ToTupleImpl<3> {
+            template<typename S> auto operator()(S&& s) const {
+                auto[e0, e1, e2] = std::forward<S>(s);
+                return std::make_tuple(e0, e1, e2);
+            }
+        };
+        template<> struct ToTupleImpl<4> {
+            template<typename S> auto operator()(S&& s) const {
+                auto[e0, e1, e2, e3] = std::forward<S>(s);
+                return std::make_tuple(e0, e1, e2, e3);
+            }
+        };
+        template<> struct ToTupleImpl<5> {
+            template<typename S> auto operator()(S&& s) const {
+                auto[e0, e1, e2, e3, e4] = std::forward<S>(s);
+                return std::make_tuple(e0, e1, e2, e3, e4);
+            }
+        };
+        template<> struct ToTupleImpl<6> {
+            template<typename S> auto operator()(S&& s) const {
+                auto[e0, e1, e2, e3, e4, e5] = std::forward<S>(s);
+                return std::make_tuple(e0, e1, e2, e3, e4, e5);
+            }
+        };
+        template<> struct ToTupleImpl<7> {
+            template<typename S> auto operator()(S&& s) const {
+                auto[e0, e1, e2, e3, e4, e5, e6] = std::forward<S>(s);
+                return std::make_tuple(e0, e1, e2, e3, e4, e5, e6);
+            }
+        };
+
+        template<std::size_t N, class S>
+        auto toTuple(S&& s) {
+            return ToTupleImpl<N>{}(std::forward<S>(s));
+        }
+*/
         template <typename T, typename Head, typename... Tail> struct contains :
         std::disjunction<std::is_same<T, Head>, contains<T, Tail...>> {};
         template <typename T, typename Head> struct contains<T, Head> :
@@ -104,6 +157,22 @@ namespace cppc
         template <typename T, typename... TYPES> struct IsConvertibleFromSomethingIn<T, std::tuple<TYPES...>> :
         IsConvertibleFromSomethingIn_impl<T, TYPES...> {};
 
+        template <typename ID, typename Head, typename... Tail> struct GetAssociatedDataImpl {
+            using type = typename std::conditional<std::is_same<ID, typename Head::first_type>::value,
+                                typename Head::second_type,
+                                typename GetAssociatedDataImpl<ID, Tail...>::type>::type;
+        };
+
+        template <typename ID, typename Head> struct GetAssociatedDataImpl<ID, Head> {
+            using type = typename std::conditional<std::is_same<ID, typename Head::first_type>::value,
+                                typename Head::second_type,
+                                void>::type;
+        };
+
+        template <typename ID, typename TUPLE> struct GetAssociatedData;
+        template <typename ID, typename... PAIRS> struct GetAssociatedData<ID, std::tuple<PAIRS...>> :
+        GetAssociatedDataImpl<ID, PAIRS...> {};
+
         template <typename T>
         struct Parse {
             static std::optional<T> work(std::string_view s);
@@ -145,11 +214,15 @@ namespace cppc
             }
         };
 
+        template <typename T> void write(std::stringstream& ss, const T& t) { ss << t; }
+        template <> inline void write<std::string>(std::stringstream& ss, const std::string& str){ ss << '"' << str << '"'; }
+
         template <size_t I, typename TUPLE>
         struct StringConverter {
             static void toString(std::stringstream& ss, const TUPLE& data){
                 StringConverter<I-1, TUPLE>::toString(ss, data);
-                ss <<  ", " << std::get<I>(data);
+                ss <<  ", ";
+                write(ss, std::get<I>(data));
             }
 
             static bool parse(std::string_view sv, TUPLE& data){
@@ -168,7 +241,7 @@ namespace cppc
         template <typename TUPLE>
         struct StringConverter<0, TUPLE> {
             static void toString(std::stringstream& ss, const TUPLE& data){
-                ss << std::get<0>(data);
+                write(ss, std::get<0>(data));
             }
 
             static bool parse(std::string_view sv, TUPLE& data){
@@ -216,6 +289,9 @@ namespace cppc
     struct ComplexData final {
         std::tuple<T...> values;
 
+        ComplexData() = default;
+  //      template <typename S, typename = std::void_t<decltype(detail::toTuple<3>(*(S*)(nullptr)))>> ComplexData(S&& valueStruct) : values{detail::toTuple<3>(valueStruct)} {}
+
         template <typename R>
         operator R() const { return detail::ToStruct<R>(values); }
 
@@ -247,7 +323,7 @@ namespace cppc
         template <typename... T>
         struct Parse<ComplexData<T...>> {
             static std::optional<ComplexData<T...>> work(std::string_view s){
-                s = detail::trim(s);
+                s = trim(s);
                 auto data = ComplexData<T...>::parse(s);
                 if (data) return data;
                 return std::nullopt;
@@ -286,7 +362,7 @@ namespace cppc
         template <typename ENUM, ENUM SIZE>
         struct Parse<EnumeratedData<ENUM, SIZE>> {
             static std::optional<EnumeratedData<ENUM, SIZE>> work(std::string_view s){
-                s = detail::trim(s);
+                s = trim(s);
                 auto data = EnumeratedData<ENUM, SIZE>::parse(s);
                 if (data) return data;
                 return std::nullopt;
@@ -295,20 +371,20 @@ namespace cppc
     }
 
     // Default data storage class, supports strings, doubles and booleans
-    struct ConfigData final {
+    struct DefaultConfigData final {
         std::variant<std::string, double, bool> value;
         using AvailableValueTypes = std::tuple<std::string, double, bool>;
 
         std::string toString() const {
             switch (value.index()){
-                case 0: return std::get<std::string>(value);
+                case 0: return '"' + std::get<std::string>(value) + '"';
                 case 1: return std::to_string(std::get<double>(value));
                 case 2: return std::get<bool>(value) ? "true" : "false";
                 default: assert(false); return "";
             }
         }
 
-        static std::optional<ConfigData> parse(const std::string& s){
+        static std::optional<DefaultConfigData> parse(const std::string& s){
             auto os = detail::Parse<std::string>::work(s);
             if (os) return {{os.value()}};
 
@@ -325,328 +401,425 @@ namespace cppc
         template <typename T> void setValueField(const T& t){ value = t; }
     };
 
-    // Represents a collection of grouped key-value pairs.
-    // The template parameters defines the enums used to access the values, and stored data type.
-    template <typename GROUP, typename NAME, typename DATA = ConfigData, GROUP GROUP_SIZE = GROUP::_SIZE, NAME NAME_SIZE = NAME::_SIZE>
-    class ConfigImpl final {
-    public:
-        using GroupName = GROUP;
-        using ConfigName = NAME;
-        using DataType = DATA;
-
-    private:
-        template <typename T>
-        class ConfigBoundVariable final {
+    namespace detail {
+        // Represents a collection of grouped key-value pairs.
+        // The template parameters defines the enums used to access the values, and stored data type.
+        template <typename ENUM, typename DATA = DefaultConfigData, ENUM ENUM_SIZE = ENUM::_SIZE>
+        class EnumMap final {
         public:
-            ConfigBoundVariable(ConfigImpl& config, typename ConfigImpl::GroupName groupName, typename ConfigImpl::ConfigName configName)
-                    : config{config}
-                    , groupName{groupName}
-                    , configName{configName}
-            {}
-            operator T() const { return config.get<T>(groupName, configName); }
-            void update(const T& t) { config.set<T>(groupName, configName, t); }
+            using enum_type = ENUM;
+            using data_type = DATA;
+
+            void clear(ENUM id) {
+                getOptionalData(id).reset();
+            }
+
+            void clear() {
+                for (auto& v : values) {
+                    v.reset();
+                }
+            }
+
+            std::optional<DATA>& getOptionalData(ENUM id) {
+                return values[static_cast<size_t>(id)];
+            }
+
+            const std::optional<DATA>& getOptionalData(ENUM id) const {
+                return values[static_cast<size_t>(id)];
+            }
+
         private:
-            ConfigImpl& config;
-            typename ConfigImpl::GroupName groupName;
-            typename ConfigImpl::ConfigName configName;
+            std::array<std::optional<DATA>, static_cast<size_t>(ENUM_SIZE)> values;
         };
 
-        class ConfigValueProxy final {
+        template <typename GROUP, typename... ID_DATA_PAIR>
+        class ConfigImpl final {
+        private:
+            static constexpr size_t GROUP_SIZE = (size_t)GROUP::_SIZE;
+            template <typename ID> static constexpr size_t ID_SIZE = (size_t)ID::_SIZE;
+            using IdDataList = std::tuple<ID_DATA_PAIR...>;
+            template <typename ID> using DATA = typename GetAssociatedData<ID, IdDataList>::type;
+            template <typename ID> using IdHolder = EnumMap<ID, DATA<ID>>;
+            using IdHolderVariant = std::variant<IdHolder<typename ID_DATA_PAIR::first_type>...>;
+            using GroupHolder = std::array<IdHolderVariant, GROUP_SIZE>;
+            template <typename ID, typename T> using isConvertibleFrom = IsConvertibleFromSomethingIn<T, typename DATA<ID>::AvailableValueTypes>;
+            template <typename ID, typename T> using isConvertibleTo = IsConvertibleToSomethingIn<T, typename DATA<ID>::AvailableValueTypes>;
+
+        private:
+            template <typename ID, typename T>
+            class ConfigBoundVariable final {
+            public:
+                ConfigBoundVariable(ConfigImpl& config, GROUP group, ID id)
+                        : config{config}, group{group}, id{id}
+                {}
+                operator T() const { return config.get<T>(group, id); }
+                void update(const T& t) { config.set<T>(group, id, t); }
+            private:
+                ConfigImpl& config;
+                GROUP group;
+                ID id;
+            };
+
+            template <typename ID>
+            class ConfigValueProxy final {
+            public:
+                explicit ConfigValueProxy(ConfigImpl& config, GROUP group, ID id)
+                        : config{config}, group{group}, id{id} {}
+                template <typename T> operator T() const { return config.get<T>(group, id); }
+                template <typename T> ConfigValueProxy& operator=(T&& t) {
+                    config.set<T>(group, id, std::forward<T>(t));
+                    return *this;
+                }
+                template <typename T> bool operator==(const T& t) {
+                    return config.get<T>(group, id) == t;
+                }
+                template <typename T> bool operator!=(const T& t) {
+                    return config.get<T>(group, id) != t;
+                }
+                template <typename T> bool operator>=(const T& t) {
+                    return config.get<T>(group, id) >= t;
+                }
+                template <typename T> bool operator<=(const T& t) {
+                    return config.get<T>(group, id) <= t;
+                }
+                template <typename T> bool operator<(const T& t) {
+                    return config.get<T>(group, id) < t;
+                }
+                template <typename T> bool operator>(const T& t) {
+                    return config.get<T>(group, id) > t;
+                }
+            private:
+                ConfigImpl& config;
+                GROUP group;
+                ID id;
+            };
+
+            friend class ConfigGroupProxy;
+            class ConfigGroupProxy final {
+            public:
+                ConfigGroupProxy(ConfigImpl& config, GROUP group) : config{config}, group{group} {}
+                template <typename ID> ConfigValueProxy<ID> operator[](ID id) { return config[std::pair{group, id}]; }
+            private:
+                ConfigImpl& config;
+                GROUP group;
+            };
+
+            template <typename TUPLE, size_t I>
+            struct Initializer { static void init(ConfigImpl& config){
+                    config.configValues[I] = IdHolder<typename std::tuple_element_t<I, TUPLE>::first_type>{};
+                    Initializer<TUPLE, I-1>::init(config);
+                }};
+
+            template <typename TUPLE>
+            struct Initializer<TUPLE, 0> { static void init(ConfigImpl& config){
+                    config.configValues[0] = IdHolder<typename std::tuple_element_t<0, TUPLE>::first_type>{};
+                }};
+
         public:
-            explicit ConfigValueProxy(ConfigImpl& config, GroupName groupName, ConfigName configName)
-                    : config{config}, groupName{groupName}, configName{configName} {}
-            template <typename T> operator T() const { return config.get<T>(groupName, configName); }
-            template <typename T> ConfigValueProxy& operator=(T&& t) {
-                config.set<T>(groupName, configName, std::forward<T>(t));
+            ConfigImpl() {
+                Initializer<IdDataList, std::tuple_size_v<IdDataList> - 1>::init(*this);
+            }
+
+            explicit ConfigImpl(const std::string& filePath) {
+                Initializer<IdDataList, std::tuple_size_v<IdDataList> - 1>::init(*this);
+                load(filePath);
+            }
+
+            ConfigImpl& load(const std::string& filePath, bool overwrite = true) {
+                std::ifstream f(filePath);
+
+                size_t actGroup = 0;
+                std::string line;
+                int lineNumber = 0;
+                while (std::getline(f, line)){
+                    lineNumber++;
+                    trim(line);
+                    if (line.length() == 0 || line[0] == ';'){
+                        continue;
+                    }
+                    else if (line[0] == '['){
+                        auto found = std::find(line.begin(), line.end(), ']');
+                        if (found != line.end()){
+                            auto s = line.substr(1, static_cast<unsigned long long>(found - line.begin() - 1));
+                            trim(s);
+                            auto g = groupFromString(s);
+                            if (g){
+                                actGroup = static_cast<size_t>(g.value());
+                            } else {
+                                std::cerr << "Group name - " << s << " is invalid!\n";
+                            }
+                        } else {
+                            std::cerr << "Line " << lineNumber << " is invalid: missing ']'!\n";
+                        }
+                    } else {
+                        auto found = std::find(line.begin(), line.end(), '=');
+                        if (found != line.end()){
+                            auto s = line.substr(0, static_cast<unsigned long long>(found - line.begin()));
+                            trim(s);
+
+                            auto& ihv = configValues[actGroup];
+                            std::visit([&](auto&& enumMap) {
+                                using ID = typename std::decay_t<decltype(enumMap)>::enum_type;
+
+                                auto n = idFromString<ID>(s);
+                                if (n){
+                                    s = std::string{found + 1, line.end()};
+                                    trim(s);
+                                    if (s.length() == 0){
+                                        std::cerr << "Line " << lineNumber << " is invalid: missing value!\n";
+                                        return;
+                                    }
+                                    auto opt = DATA<ID>::parse(s);
+                                    if (opt){
+                                        if (overwrite || !getOptionalData(static_cast<GROUP>(actGroup), n.value())){
+                                            getOptionalData(static_cast<GROUP>(actGroup), n.value()) = opt;
+                                        }
+                                    } else {
+                                        std::cerr << "Line " << lineNumber << " is invalid: value format is not parsable!\n";
+                                    }
+                                } else {
+                                    std::cerr << "Configuration name - " << s << " is invalid!\n";
+                                }
+                            }, ihv);
+                        } else {
+                            std::cerr << "Line " << lineNumber << " is invalid: missing '='!\n";
+                        }
+                    }
+                }
                 return *this;
             }
-        private:
-            ConfigImpl& config;
-            GroupName groupName;
-            ConfigName configName;
-        };
 
-        friend class ConfigGroupProxy;
-        class ConfigGroupProxy final {
-        public:
-            ConfigGroupProxy(ConfigImpl& config, GroupName groupName) : config{config}, groupName{groupName} {}
-            ConfigValueProxy operator[](ConfigName configName) { return config[{groupName, configName}]; }
-        private:
-            ConfigImpl& config;
-            GroupName groupName;
-        };
-
-        template <typename T> using isConvertibleFrom = detail::IsConvertibleFromSomethingIn<T, typename DataType::AvailableValueTypes>;
-        template <typename T> using isConvertibleTo = detail::IsConvertibleToSomethingIn<T, typename DataType::AvailableValueTypes>;
-
-    public:
-        explicit ConfigImpl(const std::string& filePath) {
-            load(filePath);
-        }
-
-        ConfigImpl& load(const std::string& filePath, bool overwrite = true){
-            std::ifstream f(filePath);
-
-            size_t actGroup = 0;
-            std::string line;
-            int lineNumber = 0;
-            while (std::getline(f, line)){
-                lineNumber++;
-                detail::trim(line);
-                if (line.length() == 0 || line[0] == ';'){
-                    continue;
-                }
-                else if (line[0] == '['){
-                    auto found = std::find(line.begin(), line.end(), ']');
-                    if (found != line.end()){
-                        auto s = line.substr(1, static_cast<unsigned long long>(found - line.begin() - 1));
-                        detail::trim(s);
-                        auto g = configGroupFromString(s);
-                        if (g){
-                            actGroup = static_cast<size_t>(g.value());
-                        } else {
-                            std::cerr << "Group name - " << s << " is invalid!\n";
-                        }
-                    } else {
-                        std::cerr << "Line " << lineNumber << " is invalid: missing ']'!\n";
-                    }
-                } else {
-                    auto found = std::find(line.begin(), line.end(), '=');
-                    if (found != line.end()){
-                        auto s = line.substr(0, static_cast<unsigned long long>(found - line.begin()));
-                        detail::trim(s);
-                        auto n = configNameFromString(s);
-                        if (n){
-                            s = std::string{found + 1, line.end()};
-                            detail::trim(s);
-                            if (s.length() == 0){
-                                std::cerr << "Line " << lineNumber << " is invalid: missing value!\n";
-                                continue;
+            ConfigImpl& load(const ConfigImpl& config, bool overwrite) {
+                for (size_t i = 0; i < static_cast<size_t>(GROUP_SIZE); ++i){
+                    auto& ihv = configValues[i];
+                    std::visit([&](auto&& enumMap){
+                        using ID = typename std::decay_t<decltype(enumMap)>::enum_type;
+                        for (size_t j = 0; j < static_cast<size_t>(ID_SIZE<ID>); ++j){
+                            auto& oc1 = getOptionalData((GROUP)i, (ID)j);
+                            auto& oc2 = config.getOptionalData((GROUP)i, (ID)j);
+                            if (oc2 && (overwrite || !oc1)){
+                                oc1 = oc2;
                             }
-                            auto opt = DATA::parse(s);
+                        }
+                    }, ihv);
+                }
+                return *this;
+            }
+
+            bool save(const std::string& filePath) const {
+                std::ofstream f(filePath);
+                if (!f) return false;
+                f << std::boolalpha;
+
+                for (size_t i = 0; i < static_cast<size_t>(GROUP_SIZE); ++i){
+                    f << '[' << toString(static_cast<GROUP>(i)) << ']' << '\n';
+                    auto& ihv = configValues[i];
+                    std::visit([&](auto&& enumMap){
+                        using ID = typename std::decay_t<decltype(enumMap)>::enum_type;
+                        for (size_t j = 0; j < static_cast<size_t>(ID_SIZE<ID>); ++j){
+                            auto& opt = getOptionalData((GROUP)i, (ID)j);
                             if (opt){
-                                if (overwrite || !getOptionalData(static_cast<GroupName>(actGroup), n.value())){
-                                    getOptionalData(static_cast<GroupName>(actGroup), n.value()) = opt;
-                                }
-                            } else {
-                                std::cerr << "Line " << lineNumber << " is invalid: value format is not parsable!\n";
+                                f << toString(static_cast<ID>(j)) << "=" << opt.value().toString() << '\n';
                             }
-                        } else {
-                            std::cerr << "Configuration name - " << s << " is invalid!\n";
                         }
-                    } else {
-                        std::cerr << "Line " << lineNumber << " is invalid: missing '='!\n";
-                    }
+                        f << '\n';
+                    }, ihv);
+                }
+                return !!f;
+            }
+
+            template <typename ID>
+            void clear(GROUP group, ID id) {
+                getOptionalData(group, id).reset();
+            }
+
+            void clear() {
+                for (auto& v : configValues){
+                    std::visit([](auto&& enumMap){
+                        enumMap.clear();
+                    }, v);
                 }
             }
-            return *this;
-        }
 
-        ConfigImpl& load(const ConfigImpl& config, bool overwrite) {
-            for (size_t i = 0; i < static_cast<size_t>(GROUP_SIZE); ++i){
-                for (size_t j = 0; j < static_cast<size_t>(NAME_SIZE); ++j){
-                    if (config.configValues[i][j] && (overwrite || !configValues[i][j])){
-                        configValues[i][j] = config.configValues[i][j];
-                    }
-                }
+            template <typename T, typename ID>
+            ConfigBoundVariable<ID, T> bind(GROUP groupName, ID configName) {
+                return ConfigBoundVariable<ID, T>{*this, groupName, configName};
             }
-            return *this;
-        }
 
-        bool save(const std::string& filePath) const {
-            std::ofstream f(filePath);
-            if (!f) return false;
-            f << std::boolalpha;
-
-            for (size_t i = 0; i < static_cast<size_t>(GROUP_SIZE); ++i){
-                f << '[' << toString(static_cast<GroupName >(i)) << ']' << '\n';
-                for (size_t j = 0; j < static_cast<size_t>(NAME_SIZE); ++j){
-                    if (configValues[i][j]){
-                        f << toString(static_cast<ConfigName>(j)) << "=" << configValues[i][j].value().toString() << '\n';
-                    }
-                }
-                f << '\n';
+            template <typename T, typename ID>
+            ConfigBoundVariable<ID, T> bind(ID configName) {
+                return bind<T>(static_cast<GROUP>(0), configName);
             }
-            return !!f;
-        }
 
-        void clear(GroupName groupName, ConfigName configName) {
-            getOptionalData(groupName, configName).reset();
-        }
-
-        void clear() {
-            for (auto& group : configValues) {
-                for (auto& config : group){
-                    config.reset();
-                }
-            }
-        }
-
-        template <typename T>
-        ConfigBoundVariable<T> bind(GroupName groupName, ConfigName configName) {
-            return ConfigBoundVariable<T>{*this, groupName, configName};
-        }
-
-        template <typename T>
-        ConfigBoundVariable<T> bind(ConfigName configName) {
-            return bind<T>(static_cast<GroupName>(0), configName);
-        }
-
-        template <typename T>
-        T get(GroupName groupName, ConfigName configName) const {
-            static_assert(isConvertibleFrom<T>::value, "incompatible types");
-            try {
+            template <typename T, typename ID>
+            T get(GROUP group, ID id) const {
+                static_assert(isConvertibleFrom<ID, T>::value, "incompatible types");
+                try {
 #ifdef _MSC_VER
-                return T(getOptionalData(groupName, configName).value().getValueField<typename isConvertibleFrom<T>::type>());
+                    return T(getOptionalData(group, id).value().getValueField<typename isConvertibleFrom<ID, T>::type>());
 #else
-                return T(getOptionalData(groupName, configName).value().template getValueField<typename isConvertibleFrom<T>::type>());
+                    return T(getOptionalData(group, id).value().template getValueField<typename isConvertibleFrom<ID, T>::type>());
 #endif
-            } catch (const std::bad_optional_access&) {
-                throw std::runtime_error("<" + toString(groupName) + ", " + toString(configName) + "> is not found!");
-            } catch (...) {
-                throw std::runtime_error("<" + toString(groupName) + ", " + toString(configName) + "> is accessed with bad type!");
+                } catch (const std::bad_optional_access&) {
+                    throw std::runtime_error("<" + toString(group) + ", " + toString(id) + "> is not found!");
+                } catch (...) {
+                    throw std::runtime_error("<" + toString(group) + ", " + toString(id) + "> is accessed with bad type!");
+                }
             }
-        }
 
-        template <typename T>
-        T get(ConfigName configName) const {
-            return get<T>(static_cast<GroupName>(0), configName);
-        }
+            template <typename T, typename ID>
+            T get(ID id) const {
+                return get<T>(static_cast<GROUP>(0), id);
+            }
 
-        template <typename T>
-        std::optional<T> tryGet(GroupName groupName, ConfigName configName) const {
-            static_assert(isConvertibleFrom<T>::value, "incompatible types");
-            auto& opt = getOptionalData(groupName, configName);
-            try {
+            template <typename T, typename ID>
+            std::optional<T> tryGet(GROUP group, ID id) const {
+                static_assert(isConvertibleFrom<ID, T>::value, "incompatible types");
+                auto& opt = getOptionalData(group, id);
+                try {
 #ifdef _MSC_VER
-                return opt ? std::make_optional(T(opt.value().getValueField<typename isConvertibleFrom<T>::type>())) : std::nullopt;
+                    return opt ? std::make_optional(T(opt.value().getValueField<typename isConvertibleFrom<ID, T>::type>())) : std::nullopt;
 #else
-                return opt ? std::make_optional(T(opt.value().template getValueField<typename isConvertibleFrom<T>::type>())) : std::nullopt;
+                    return opt ? std::make_optional(T(opt.value().template getValueField<typename isConvertibleFrom<ID, T>::type>())) : std::nullopt;
 #endif
-            } catch (...) {
-                throw std::runtime_error("<" + toString(groupName) + ", " + toString(configName) + "> is accessed with bad type!");
+                } catch (...) {
+                    throw std::runtime_error("<" + toString(group) + ", " + toString(id) + "> is accessed with bad type!");
+                }
             }
-        }
 
-        template <typename T>
-        std::optional<T> tryGet(ConfigName configName) const {
-            return tryGet<T>(static_cast<GroupName>(0), configName);
-        }
+            template <typename T, typename ID>
+            std::optional<T> tryGet(ID id) const {
+                return tryGet<T>(static_cast<GROUP>(0), id);
+            }
 
-        template <typename T>
-        std::optional<T> mustGet(GroupName groupName, ConfigName configName) const noexcept {
-            auto& opt = getOptionalData(groupName, configName);
-            try {
+            template <typename T, typename ID>
+            std::optional<T> mustGet(GROUP group, ID id) const noexcept {
+                auto& opt = getOptionalData(group, id);
+                try {
 #ifdef _MSC_VER
-                return opt ? std::make_optional(opt.value().getValueField<T>()) : std::nullopt;
+                    return opt ? std::make_optional(opt.value().getValueField<T>()) : std::nullopt;
 #else
-                return opt ? std::make_optional(opt.value().template getValueField<T>()) : std::nullopt;
+                    return opt ? std::make_optional(opt.value().template getValueField<T>()) : std::nullopt;
 #endif
-
-            } catch (...) {
-                return std::nullopt;
+                } catch (...) {
+                    return std::nullopt;
+                }
             }
-        }
 
-        template <typename T>
-        std::optional<T> mustGet(ConfigName configName) const noexcept {
-            return mustGet<T>(static_cast<GroupName>(0), configName);
-        }
-
-        ConfigValueProxy operator[](std::pair<GroupName, ConfigName> idx) {
-            return ConfigValueProxy{*this, idx.first, idx.second};
-        }
-
-        ConfigGroupProxy operator[](GroupName groupName) {
-            return ConfigGroupProxy{*this, groupName};
-        }
-
-        ConfigValueProxy operator[](ConfigName configName) {
-            return ConfigValueProxy{*this, static_cast<GroupName>(0), configName};
-        }
-
-        template <typename T>
-        void set(GroupName groupName, ConfigName configName, const T& t) {
-            static_assert(isConvertibleTo<T>::value, "incompatible types");
-            auto& opt = getOptionalData(groupName, configName);
-            if (!opt){
-                opt = DataType{(typename isConvertibleTo<T>::type)t};
-            } else {
-                opt.value().setValueField((typename isConvertibleTo<T>::type)t);
+            template <typename T, typename ID>
+            std::optional<T> mustGet(ID id) const noexcept {
+                return mustGet<T>(static_cast<GROUP>(0), id);
             }
-        }
 
-        template <typename T>
-        void set(ConfigName configName, const T& t) {
-            set<T>(static_cast<GroupName>(0), configName, t);
-        }
+            template <typename ID>
+            ConfigValueProxy<ID> operator[](std::pair<GROUP, ID> idx) {
+                return ConfigValueProxy<ID>{*this, idx.first, idx.second};
+            }
 
-        std::optional<std::reference_wrapper<DATA>> getData(GroupName groupName, ConfigName configName) {
-            auto& opt = getOptionalData(groupName, configName);;
-            return opt ? std::make_optional(std::reference_wrapper<DATA>{opt.value()}) : std::nullopt;
-        }
+            ConfigGroupProxy operator[](GROUP group) {
+                return ConfigGroupProxy{*this, group};
+            }
 
-        std::optional<std::reference_wrapper<DATA>> getData(ConfigName configName) {
-            return getData(static_cast<GroupName>(0), configName);
-        }
+            template <typename ID>
+            ConfigValueProxy<ID> operator[](ID id) {
+                return ConfigValueProxy<ID>{*this, static_cast<GROUP>(0), id};
+            }
 
-    private:
-        std::string toString(ConfigName name) const {
-            return detail::getTypeToName<ConfigName, NAME_SIZE>()[static_cast<size_t>(name)];
-        }
+            template <typename T, typename ID>
+            void set(GROUP group, ID id, const T& t) {
+                static_assert(isConvertibleTo<ID, T>::value, "incompatible types");
+                auto& opt = getOptionalData(group, id);
+                if (!opt){
+                    opt = DATA<ID>{(typename isConvertibleTo<ID, T>::type)t};
+                } else {
+                    opt.value().setValueField((typename isConvertibleTo<ID, T>::type)t);
+                }
+            }
 
-        std::string toString(GroupName group) const {
-            return detail::getTypeToName<GroupName, GROUP_SIZE>()[static_cast<size_t>(group)];
-        }
+            template <typename T, typename ID>
+            void set(ID id, const T& t) {
+                set<T>(static_cast<GROUP>(0), id, t);
+            }
 
-        std::optional<ConfigName> configNameFromString(const std::string& str) const {
-            auto& map = detail::getNameToType<NAME, NAME_SIZE>();
-            auto found = map.find(str);
-            if (found == map.end()) return std::nullopt;
-            return std::make_optional(found->second);
-        }
+            template <typename ID>
+            std::optional<std::reference_wrapper<DATA<ID>>> getData(GROUP group, ID id) {
+                auto& opt = getOptionalData(group, id);
+                return opt ? std::make_optional(std::reference_wrapper<DATA<ID>>{opt.value()}) : std::nullopt;
+            }
 
-        std::optional<GroupName> configGroupFromString(const std::string& str) const {
-            auto& map = detail::getNameToType<GROUP, GROUP_SIZE>();
-            auto found = map.find(str);
-            if (found == map.end()) return std::nullopt;
-            return std::make_optional(found->second);
-        }
+            template <typename ID>
+            std::optional<std::reference_wrapper<DATA<ID>>> getData(ID id) {
+                return getData(static_cast<GROUP>(0), id);
+            }
 
-        std::optional<DataType>& getOptionalData(GroupName groupName, ConfigName configName) {
-            return configValues[static_cast<size_t>(groupName)][static_cast<size_t>(configName)];
-        }
+        private:
+            std::optional<GROUP> groupFromString(const std::string& str){
+                auto& map = getNameToType<GROUP, GROUP::_SIZE>();
+                auto found = map.find(str);
+                if (found == map.end()) return std::nullopt;
+                return std::make_optional(found->second);
+            }
 
-        const std::optional<DataType>& getOptionalData(GroupName groupName, ConfigName configName) const {
-            return configValues[static_cast<size_t>(groupName)][static_cast<size_t>(configName)];
-        }
+            template <typename ID>
+            std::optional<ID> idFromString(const std::string& str){
+                auto& map = getNameToType<ID, ID::_SIZE>();
+                auto found = map.find(str);
+                if (found == map.end()) return std::nullopt;
+                return std::make_optional(found->second);
+            }
 
-    private:
-        std::array<std::array<std::optional<DataType>, static_cast<size_t>(NAME_SIZE)>, static_cast<size_t>(GROUP_SIZE)> configValues;
-    };
+            std::string toString(GROUP group) const {
+                return getTypeToName<GROUP, (GROUP)GROUP_SIZE>()[static_cast<size_t>(group)];
+            }
 
-    namespace detail {
-        template <typename T1, typename T2, typename T3, typename Enable = void>
-        struct ConfigImplTypeSwizzler final {};
+            template <typename ID>
+            std::string toString(ID id) const {
+                return getTypeToName<ID>()[static_cast<size_t>(id)];
+            }
 
-        template <typename T1>
-        struct ConfigImplTypeSwizzler<T1, detail::DefaultGroup, ConfigData> final {
-            using type = ConfigImpl<detail::DefaultGroup, T1>;
-        };
+            template <typename ID>
+            std::optional<DATA<ID>>& getOptionalData(GROUP group, ID id) {
+                return std::get<IdHolder<ID>>(configValues[(size_t)group]).getOptionalData(id);
+            }
 
-        template <typename T1, typename T2, typename T3>
-        struct ConfigImplTypeSwizzler<T1, T2, T3, typename std::enable_if<std::is_enum<T2>::value>::type> final {
-            using type = ConfigImpl<T1, T2, T3>;
-        };
+            template <typename ID>
+            const std::optional<DATA<ID>>& getOptionalData(GROUP group, ID id) const {
+                return std::get<IdHolder<ID>>(configValues[(size_t)group]).getOptionalData(id);
+            }
 
-        template <typename T1, typename T2, typename T3>
-        struct ConfigImplTypeSwizzler<T1, T2, T3, typename std::enable_if<!std::is_enum<T2>::value>::type> final {
-            using type = ConfigImpl<detail::DefaultGroup, T1, T2>;
+        private:
+            GroupHolder configValues;
         };
     }
 
-    template <typename T1, typename T2 = detail::DefaultGroup, typename T3 = ConfigData>
-    using Config = typename detail::ConfigImplTypeSwizzler<T1, T2, T3>::type;
+    namespace detail {
+        template <typename T> struct choose_type {
+            using type = std::pair<T, DefaultConfigData>;
+        };
+        template <typename T1, typename T2> struct choose_type<std::pair<T1, T2>> {
+            using type = std::pair<T1, T2>;
+        };
+        template <typename T> using choose_type_t = typename choose_type<T>::type;
+
+        template <typename Enable, typename T1, typename T2, typename... TS>
+        struct ConfigImplTypeSwizzler final { using type = void; };
+
+        // DefaultGroup
+        template <typename T1>
+        struct ConfigImplTypeSwizzler<void, T1, DefaultGroup> final {
+            using type = ConfigImpl<DefaultGroup, choose_type_t<T1>>;
+        };
+
+        // CustomGroup
+        template <typename T1, typename T2, typename... TS>
+        struct ConfigImplTypeSwizzler<void, T1, T2, TS...> final {
+            using type = ConfigImpl<T1, choose_type_t<T2>, choose_type_t<TS>...>;
+        };
+    }
+
+    template <typename T1, typename T2 = detail::DefaultGroup, typename... TS>
+    using Config = typename detail::ConfigImplTypeSwizzler<void, T1, T2, TS...>::type;
+
 }
 
 #endif //CPP_CONFIG_CONFIG_HPP
