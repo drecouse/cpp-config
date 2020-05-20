@@ -39,9 +39,9 @@ enum class ConfigGroup {
     GENERAL, RENDER, CAMERA, _SIZE
 };
 
-enum class GeneralID { SPEED, _SIZE };
+enum class GeneralID { SPEED, MASS, _SIZE };
 enum class RenderID { MODE, TEST, _SIZE };
-enum class CameraID { WIDTH, HEIGHT, SPEED, NAME, _SIZE };
+enum class CameraID { WIDTH, HEIGHT, SPEED, NAME, FOV, _SIZE };
 
 void init_tests() {
     cppc::configure<ConfigGroup>([](auto e){
@@ -56,6 +56,7 @@ void init_tests() {
     cppc::configure<GeneralID>([](auto e){
         switch (e){
             case GeneralID::SPEED: return "speed";
+            case GeneralID::MASS: return "mass";
             default: assert(false); return "";
         }
     });
@@ -73,7 +74,8 @@ void init_tests() {
             case CameraID::WIDTH: return "width";
             case CameraID::HEIGHT: return "height";
             case CameraID::SPEED: return "speed";
-            case CameraID ::NAME: return "name";
+            case CameraID::NAME: return "name";
+            case CameraID::FOV: return "fov";
             default: assert(false); return "";
         }
     });
@@ -107,6 +109,7 @@ void run_test() {
             std::pair<RenderID, CustomConfigData>,
             CameraID
     > c2;
+
     auto c22 = c2;
     c2.load("examples/config2.ini");
     c22[ConfigGroup::CAMERA][CameraID::HEIGHT] = 600;
@@ -127,4 +130,8 @@ void run_test() {
     boundSpeed.update(32.0);
 
     c2.save("config22.ini");
+
+    auto c4 = std::move(c2);
+    c2 = c4;
+    c2 = std::move(c4);
 }

@@ -181,7 +181,7 @@ namespace cppc
         template <>
         struct Parse<std::string> {
             static std::optional<std::string> work(std::string_view s){
-                s = detail::trim(s);
+                s = trim(s);
                 if (s[0] == '"'){
                     auto found = std::find(s.begin()+1, s.end(), '"');
                     if (found == s.end()-1) return {{std::string{s.begin()+1, s.end()-1}}};
@@ -193,7 +193,7 @@ namespace cppc
         template <>
         struct Parse<double> {
             static std::optional<double> work(std::string_view s){
-                s = detail::trim(s);
+                s = trim(s);
                 auto str = std::string(s);
                 char* end = nullptr;
                 double d = std::strtod(str.c_str(), &end);
@@ -205,7 +205,7 @@ namespace cppc
         template <>
         struct Parse<bool> {
             static std::optional<bool> work(std::string_view s){
-                s = detail::trim(s);
+                s = trim(s);
                 auto upper = std::string(s);
                 std::transform(upper.begin(), upper.end(), upper.begin(), [](auto c){return toupper(c);});
                 if (upper == "TRUE") return {{true}};
@@ -226,7 +226,7 @@ namespace cppc
             }
 
             static bool parse(std::string_view sv, TUPLE& data){
-                sv = detail::trim(sv);
+                sv = trim(sv);
                 int commaIndex = sv.rfind(',');
                 auto psv = sv.substr(commaIndex + 1, sv.size() - commaIndex);
                 auto value = Parse<typename std::tuple_element<I, TUPLE>::type>::work(psv);
@@ -245,7 +245,7 @@ namespace cppc
             }
 
             static bool parse(std::string_view sv, TUPLE& data){
-                sv = detail::trim(sv);
+                sv = trim(sv);
                 auto value = Parse<typename std::tuple_element<0, TUPLE>::type>::work(sv);
                 if (value){
                     std::get<0>(data) = value.value();
@@ -440,7 +440,7 @@ namespace cppc
             using IdDataList = std::tuple<ID_DATA_PAIR...>;
             template <typename ID> using DATA = typename GetAssociatedData<ID, IdDataList>::type;
             template <typename ID> using IdHolder = EnumMap<ID, DATA<ID>>;
-            using IdHolderVariant = std::variant<IdHolder<typename ID_DATA_PAIR::first_type>...>;
+            using IdHolderVariant = std::variant<IdHolder<typename ID_DATA_PAIR::first_type>*...>;
             using GroupHolder = std::array<IdHolderVariant, GROUP_SIZE>;
             template <typename ID, typename T> using isConvertibleFrom = IsConvertibleFromSomethingIn<T, typename DATA<ID>::AvailableValueTypes>;
             template <typename ID, typename T> using isConvertibleTo = IsConvertibleToSomethingIn<T, typename DATA<ID>::AvailableValueTypes>;
@@ -506,13 +506,13 @@ namespace cppc
 
             template <typename TUPLE, size_t I>
             struct Initializer { static void init(ConfigImpl& config){
-                    config.configValues[I] = IdHolder<typename std::tuple_element_t<I, TUPLE>::first_type>{};
+                    config.configValues[I] = new IdHolder<typename std::tuple_element_t<I, TUPLE>::first_type>();
                     Initializer<TUPLE, I-1>::init(config);
                 }};
 
             template <typename TUPLE>
             struct Initializer<TUPLE, 0> { static void init(ConfigImpl& config){
-                    config.configValues[0] = IdHolder<typename std::tuple_element_t<0, TUPLE>::first_type>{};
+                    config.configValues[0] = new IdHolder<typename std::tuple_element_t<0, TUPLE>::first_type>();
                 }};
 
         public:
@@ -523,6 +523,31 @@ namespace cppc
             explicit ConfigImpl(const std::string& filePath) {
                 Initializer<IdDataList, std::tuple_size_v<IdDataList> - 1>::init(*this);
                 load(filePath);
+            }
+
+            ~ConfigImpl() noexcept {
+                for (auto& v : configValues){
+                    std::visit([](auto&& enumMap){
+                        delete enumMap;
+                    }, v);
+                }
+            }
+
+            ConfigImpl(const ConfigImpl& that) {
+                Initializer<IdDataList, std::tuple_size_v<IdDataList> - 1>::init(*this);
+                load(that, true);
+            }
+
+            ConfigImpl(ConfigImpl&& that) noexcept {
+                for (int i = 0; i < configValues.size(); ++i) {
+                    configValues[i] = std::move(that.configValues[i]);
+                    that.configValues[i] = {};
+                }
+            }
+
+            ConfigImpl& operator=(ConfigImpl that) {
+                std::swap(configValues, that.configValues);
+                return *this;
             }
 
             ConfigImpl& load(const std::string& filePath, bool overwrite = true) {
@@ -559,7 +584,7 @@ namespace cppc
 
                             auto& ihv = configValues[actGroup];
                             std::visit([&](auto&& enumMap) {
-                                using ID = typename std::decay_t<decltype(enumMap)>::enum_type;
+                                using ID = typename std::decay_t<decltype(*enumMap)>::enum_type;
 
                                 auto n = idFromString<ID>(s);
                                 if (n){
@@ -593,7 +618,7 @@ namespace cppc
                 for (size_t i = 0; i < static_cast<size_t>(GROUP_SIZE); ++i){
                     auto& ihv = configValues[i];
                     std::visit([&](auto&& enumMap){
-                        using ID = typename std::decay_t<decltype(enumMap)>::enum_type;
+                        using ID = typename std::decay_t<decltype(*enumMap)>::enum_type;
                         for (size_t j = 0; j < static_cast<size_t>(ID_SIZE<ID>); ++j){
                             auto& oc1 = getOptionalData((GROUP)i, (ID)j);
                             auto& oc2 = config.getOptionalData((GROUP)i, (ID)j);
@@ -615,7 +640,7 @@ namespace cppc
                     f << '[' << toString(static_cast<GROUP>(i)) << ']' << '\n';
                     auto& ihv = configValues[i];
                     std::visit([&](auto&& enumMap){
-                        using ID = typename std::decay_t<decltype(enumMap)>::enum_type;
+                        using ID = typename std::decay_t<decltype(*enumMap)>::enum_type;
                         for (size_t j = 0; j < static_cast<size_t>(ID_SIZE<ID>); ++j){
                             auto& opt = getOptionalData((GROUP)i, (ID)j);
                             if (opt){
@@ -636,7 +661,7 @@ namespace cppc
             void clear() {
                 for (auto& v : configValues){
                     std::visit([](auto&& enumMap){
-                        enumMap.clear();
+                        enumMap->clear();
                     }, v);
                 }
             }
@@ -741,6 +766,20 @@ namespace cppc
                 set<T>(static_cast<GROUP>(0), id, t);
             }
 
+            template <typename T, typename ID>
+            void setIfEmpty(GROUP group, ID id, const T& t) {
+                static_assert(isConvertibleTo<ID, T>::value, "incompatible types");
+                auto& opt = getOptionalData(group, id);
+                if (!opt){
+                    opt = DATA<ID>{(typename isConvertibleTo<ID, T>::type)t};
+                }
+            }
+
+            template <typename T, typename ID>
+            void setIfEmpty(ID id, const T& t) {
+                setIfEmpty<T>(static_cast<GROUP>(0), id, t);
+            }
+
             template <typename ID>
             std::optional<std::reference_wrapper<DATA<ID>>> getData(GROUP group, ID id) {
                 auto& opt = getOptionalData(group, id);
@@ -779,12 +818,12 @@ namespace cppc
 
             template <typename ID>
             std::optional<DATA<ID>>& getOptionalData(GROUP group, ID id) {
-                return std::get<IdHolder<ID>>(configValues[(size_t)group]).getOptionalData(id);
+                return std::get<IdHolder<ID>*>(configValues[(size_t)group])->getOptionalData(id);
             }
 
             template <typename ID>
             const std::optional<DATA<ID>>& getOptionalData(GROUP group, ID id) const {
-                return std::get<IdHolder<ID>>(configValues[(size_t)group]).getOptionalData(id);
+                return std::get<IdHolder<ID>*>(configValues[(size_t)group])->getOptionalData(id);
             }
 
         private:
