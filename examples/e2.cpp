@@ -1,4 +1,5 @@
 #include <cppc/config.hpp>
+#include <iostream>
 
 enum class ConfigGroup {
     GENERAL, RENDER, CAMERA, _SIZE

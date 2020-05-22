@@ -1,4 +1,5 @@
 #include "cppc/config.hpp"
+#include <iostream>
 
 enum class WindowMode {
     FULLSCREEN, WINDOWED, WINDOWED_FULLSCREEN, _SIZE
@@ -109,6 +110,7 @@ void run_test() {
             std::pair<RenderID, CustomConfigData>,
             CameraID
     > c2;
+    c2.setErrorFunction([](const auto& s){ std::cerr << s << std::endl; });
 
     auto c22 = c2;
     c2.load("examples/config2.ini");

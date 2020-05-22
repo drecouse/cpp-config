@@ -1,20 +1,18 @@
 #ifndef CPP_CONFIG_CONFIG_HPP
 #define CPP_CONFIG_CONFIG_HPP
 
-#include <iostream>
 #include <fstream>
 #include <array>
-#include <vector>
 #include <unordered_map>
 #include <string>
 #include <optional>
 #include <variant>
 #include <algorithm>
-#include <functional>
 #include <type_traits>
 #include <cassert>
 #include <sstream>
 #include <string_view>
+#include <functional>
 
 namespace cppc
 {
@@ -552,17 +550,17 @@ namespace cppc
 
             ConfigImpl& load(const std::string& filePath, bool overwrite = true) {
                 std::ifstream f(filePath);
+                std::stringstream error;
 
                 size_t actGroup = 0;
                 std::string line;
                 int lineNumber = 0;
-                while (std::getline(f, line)){
+                while (std::getline(f, line)) {
                     lineNumber++;
                     trim(line);
-                    if (line.length() == 0 || line[0] == ';'){
+                    if (line.length() == 0 || line[0] == ';') {
                         continue;
-                    }
-                    else if (line[0] == '['){
+                    } else if (line[0] == '[') {
                         auto found = std::find(line.begin(), line.end(), ']');
                         if (found != line.end()){
                             auto s = line.substr(1, static_cast<unsigned long long>(found - line.begin() - 1));
@@ -571,10 +569,10 @@ namespace cppc
                             if (g){
                                 actGroup = static_cast<size_t>(g.value());
                             } else {
-                                std::cerr << "Group name - " << s << " is invalid!\n";
+                                error << "Group name - " << s << " is invalid!\n";
                             }
                         } else {
-                            std::cerr << "Line " << lineNumber << " is invalid: missing ']'!\n";
+                            error << "Line " << lineNumber << " is invalid: missing ']'!\n";
                         }
                     } else {
                         auto found = std::find(line.begin(), line.end(), '=');
@@ -591,25 +589,28 @@ namespace cppc
                                     s = std::string{found + 1, line.end()};
                                     trim(s);
                                     if (s.length() == 0){
-                                        std::cerr << "Line " << lineNumber << " is invalid: missing value!\n";
+                                        error << "Line " << lineNumber << " is invalid: missing value!\n";
                                         return;
                                     }
                                     auto opt = DATA<ID>::parse(s);
-                                    if (opt){
-                                        if (overwrite || !getOptionalData(static_cast<GROUP>(actGroup), n.value())){
+                                    if (opt) {
+                                        if (overwrite || !getOptionalData(static_cast<GROUP>(actGroup), n.value())) {
                                             getOptionalData(static_cast<GROUP>(actGroup), n.value()) = opt;
                                         }
                                     } else {
-                                        std::cerr << "Line " << lineNumber << " is invalid: value format is not parsable!\n";
+                                        error << "Line " << lineNumber << " is invalid: value format is not parsable!\n";
                                     }
                                 } else {
-                                    std::cerr << "Configuration name - " << s << " is invalid!\n";
+                                    error << "Configuration name - " << s << " is invalid!\n";
                                 }
                             }, ihv);
                         } else {
-                            std::cerr << "Line " << lineNumber << " is invalid: missing '='!\n";
+                            error << "Line " << lineNumber << " is invalid: missing '='!\n";
                         }
                     }
+                }
+                if (!error.str().empty()) {
+                    errorFunction(error.str());
                 }
                 return *this;
             }
@@ -651,6 +652,10 @@ namespace cppc
                     }, ihv);
                 }
                 return !!f;
+            }
+
+            void setErrorFunction(std::function<void(const std::string&)> errorHandler) {
+                errorFunction = std::move(errorHandler);
             }
 
             template <typename ID>
@@ -828,6 +833,7 @@ namespace cppc
 
         private:
             GroupHolder configValues;
+            std::function<void(const std::string&)> errorFunction = [](const auto&) {};
         };
     }
 
