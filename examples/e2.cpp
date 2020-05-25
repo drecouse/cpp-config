@@ -51,24 +51,25 @@ void example2()
             std::pair<CameraID, cppc::DefaultConfigData>
     > config("examples/config2.ini");
 
-    config[std::pair{ConfigGroup::GENERAL, GeneralID::SPEED}] = 11.2;
+   // config[std::pair{ConfigGroup::GENERAL, GeneralID::SPEED}] = 11.2;
+
+    config.set(ConfigGroup::GENERAL, GeneralID::SPEED, 11.2);
 
     std::string str = config[ConfigGroup::RENDER][RenderID::QUALITY];
 
     int speed2 = config[ConfigGroup::CAMERA][CameraID::SPEED];
 
-    config.clear(ConfigGroup::RENDER, RenderID::QUALITY);
+   // config.clear(ConfigGroup::RENDER, RenderID::QUALITY);
 
-    auto speed = config.bind<double>(ConfigGroup::CAMERA, CameraID::SPEED);
-    std::cout << speed << std::endl;
-    speed.update(30);
+ //   auto speed = config.bind<double>(ConfigGroup::CAMERA, CameraID::SPEED);
+ //   std::cout << speed << std::endl;
+ //   speed.update(30);
 
     std::cout << config.get<bool>(ConfigGroup::RENDER, RenderID::FULLSCREEN) << std::endl;
 
 
 
     config.save("config22.ini");
-    config.clear();
     return;
 
 /*

@@ -264,7 +264,7 @@ namespace cppc
     //      First parameter is a function with the signature: std::string(ENUM)
     //      The function must return the string associated with the enum value.
     template <typename ENUM, ENUM SIZE = ENUM::_SIZE, typename F>
-    inline void configure(const F& getName){
+    inline void configure(const F& getName) {
         for (size_t i = 0; i < static_cast<size_t>(SIZE); ++i){
             auto type = static_cast<ENUM>(i);
             auto name = getName(type);
@@ -282,12 +282,67 @@ namespace cppc
         }();
     }
 
+    // Helper struct to use typed enums for configuration values as well
+    template <typename ENUM, ENUM SIZE = ENUM::_SIZE>
+    struct EnumeratedData final {
+        ENUM value;
+
+        EnumeratedData() = default;
+        EnumeratedData(ENUM value) : value{value} {}
+        operator ENUM() const noexcept { return value; }
+
+        std::string toString() const {
+            return detail::getTypeToName<ENUM, SIZE>()[static_cast<size_t>(value)];
+        }
+
+        static std::optional<EnumeratedData> parse(std::string_view s) {
+            auto& map = detail::getNameToType<ENUM, SIZE>();
+            auto found = map.find(std::string(s));
+            if (found == map.end()) return std::nullopt;
+            else return std::make_optional(EnumeratedData{found->second});
+        }
+    };
+
+    template <typename T, typename = void> struct ConvertEnumToEnumeratedData {};
+
+    template <typename T> struct ConvertEnumToEnumeratedData<T, typename std::enable_if<std::is_enum_v<T>>::type> {
+        using type = EnumeratedData<T>;
+    };
+
+    template <typename T> struct ConvertEnumToEnumeratedData<T, typename std::enable_if<!std::is_enum_v<T>>::type> {
+        using type = T;
+    };
+
+    template <typename ENUM, ENUM SIZE = ENUM::_SIZE>
+    EnumeratedData<ENUM, SIZE> make_enumerated_data(ENUM arg) {
+        return EnumeratedData<ENUM, SIZE>{arg};
+    }
+
+    template <typename ENUM, ENUM SIZE = ENUM::_SIZE>
+    std::ostream& operator<<(std::ostream& os, const EnumeratedData<ENUM, SIZE>& data){
+        os << data.toString();
+        return os;
+    }
+
+    namespace detail {
+        template <typename ENUM, ENUM SIZE>
+        struct Parse<EnumeratedData<ENUM, SIZE>> {
+            static std::optional<EnumeratedData<ENUM, SIZE>> work(std::string_view s){
+                s = trim(s);
+                auto data = EnumeratedData<ENUM, SIZE>::parse(s);
+                if (data) return data;
+                return std::nullopt;
+            }
+        };
+    }
+
     // Helper struct to easily compose complex data structures for configuration values
     template <typename... T>
     struct ComplexData final {
         std::tuple<T...> values;
 
         ComplexData() = default;
+        ComplexData(T... args) : values{std::move(args)...} {}
   //      template <typename S, typename = std::void_t<decltype(detail::toTuple<3>(*(S*)(nullptr)))>> ComplexData(S&& valueStruct) : values{detail::toTuple<3>(valueStruct)} {}
 
         template <typename R>
@@ -312,6 +367,11 @@ namespace cppc
     };
 
     template <typename... T>
+    ComplexData<typename ConvertEnumToEnumeratedData<T>::type...> make_complex_data(T&&... args) {
+        return ComplexData<typename ConvertEnumToEnumeratedData<T>::type...>{std::forward<T>(args)...};
+    }
+
+    template <typename... T>
     std::ostream& operator<<(std::ostream& os, const ComplexData<T...>& data){
         os << data.toString();
         return os;
@@ -320,48 +380,9 @@ namespace cppc
     namespace detail {
         template <typename... T>
         struct Parse<ComplexData<T...>> {
-            static std::optional<ComplexData<T...>> work(std::string_view s){
+            static std::optional<ComplexData<T...>> work(std::string_view s) {
                 s = trim(s);
                 auto data = ComplexData<T...>::parse(s);
-                if (data) return data;
-                return std::nullopt;
-            }
-        };
-    }
-
-    // Helper struct to use typed enums for configuration values as well
-    template <typename ENUM, ENUM SIZE = ENUM::_SIZE>
-    struct EnumeratedData final {
-        ENUM value;
-
-        EnumeratedData() = default;
-        EnumeratedData(ENUM value) : value{value} {}
-        operator ENUM() const { return value; }
-
-        std::string toString() const {
-            return detail::getTypeToName<ENUM, SIZE>()[static_cast<size_t>(value)];
-        }
-
-        static std::optional<EnumeratedData> parse(std::string_view s) {
-            auto& map = detail::getNameToType<ENUM, SIZE>();
-            auto found = map.find(std::string(s));
-            if (found == map.end()) return std::nullopt;
-            else return std::make_optional(EnumeratedData{found->second});
-        }
-    };
-
-    template <typename ENUM, ENUM SIZE = ENUM::_SIZE>
-    std::ostream& operator<<(std::ostream& os, const EnumeratedData<ENUM, SIZE>& data){
-        os << data.toString();
-        return os;
-    }
-
-    namespace detail {
-        template <typename ENUM, ENUM SIZE>
-        struct Parse<EnumeratedData<ENUM, SIZE>> {
-            static std::optional<EnumeratedData<ENUM, SIZE>> work(std::string_view s){
-                s = trim(s);
-                auto data = EnumeratedData<ENUM, SIZE>::parse(s);
                 if (data) return data;
                 return std::nullopt;
             }
@@ -395,39 +416,116 @@ namespace cppc
             return std::nullopt;
         }
 
-        template <typename T> T getValueField() const { return std::get<T>(value); }
-        template <typename T> void setValueField(const T& t){ value = t; }
+        template <typename T> const T& getValueField() const noexcept { assert(std::holds_alternative<T>(value)); return std::get<T>(value); }
+        template <typename T> void setValueField(T&& t) { value = std::forward<T>(t); }
     };
 
     namespace detail {
         // Represents a collection of grouped key-value pairs.
         // The template parameters defines the enums used to access the values, and stored data type.
-        template <typename ENUM, typename DATA = DefaultConfigData, ENUM ENUM_SIZE = ENUM::_SIZE>
+        template <typename ENUM, typename DATA = DefaultConfigData, size_t ENUM_SIZE = (size_t)ENUM::_SIZE>
         class EnumMap final {
         public:
             using enum_type = ENUM;
             using data_type = DATA;
+            using storage_type = typename std::aligned_storage<sizeof(DATA), alignof(DATA)>::type;
 
-            void clear(ENUM id) {
-                getOptionalData(id).reset();
-            }
+            EnumMap() = default;
 
-            void clear() {
-                for (auto& v : values) {
-                    v.reset();
+            EnumMap(const EnumMap& that) noexcept(std::is_nothrow_copy_constructible_v<DATA>) {
+                for (int i = 0; i < ENUM_SIZE; ++i) {
+                    if (that.isDataValid((ENUM)i)) {
+                        setData((ENUM)i, that.data((ENUM)i));
+                    }
                 }
             }
 
-            std::optional<DATA>& getOptionalData(ENUM id) {
-                return values[static_cast<size_t>(id)];
+            EnumMap(EnumMap&& that) noexcept(std::is_nothrow_move_constructible_v<DATA>) {
+                for (int i = 0; i < ENUM_SIZE; ++i) {
+                    if (that.isDataValid((ENUM)i)) {
+                        setData((ENUM)i, std::move(that.data((ENUM)i)));
+                    }
+                }
             }
 
-            const std::optional<DATA>& getOptionalData(ENUM id) const {
-                return values[static_cast<size_t>(id)];
+            EnumMap& operator=(EnumMap that) noexcept(std::is_nothrow_move_assignable_v<DATA> && std::is_nothrow_move_constructible_v<DATA>) {
+                for (int i = 0; i < ENUM_SIZE; ++i) {
+                    if (that.isDataValid((ENUM)i)) {
+                        setData((ENUM)i, std::move(that.data((ENUM)i)));
+                    } else {
+                        clear((ENUM)i);
+                    }
+                    valids[i] = that.valids[i];
+                }
+                return *this;
+            }
+
+            ~EnumMap() noexcept {
+                clear();
+            }
+
+            bool isDataValid(ENUM id) const noexcept {
+                return valids[static_cast<size_t>(id)] & 1u;
+            }
+
+            bool shouldSaveData(ENUM id) const noexcept {
+                return  isDataValid(id) && valids[static_cast<size_t>(id)] & 2u;
+            }
+
+            void markDataForSave(ENUM id) noexcept {
+                assert(isDataValid(id));
+                valids[static_cast<size_t>(id)] |=  2u;
+            }
+
+            void unMarkDataForSave(ENUM id) noexcept {
+                assert(isDataValid(id));
+                valids[static_cast<size_t>(id)] &=  ~2u;
+            }
+
+            void setData(ENUM id, DATA&& data) noexcept(std::is_nothrow_move_constructible_v<DATA>) {
+                if (isDataValid(id)) {
+                    *std::launder(reinterpret_cast<DATA*>(&values[static_cast<size_t>(id)])) = std::move(data);
+                } else {
+                    new(&values[static_cast<size_t>(id)]) DATA{std::move(data)};
+                }
+                valids[static_cast<size_t>(id)] |= 1u;
+            }
+
+            void setData(ENUM id, const DATA& data) noexcept(std::is_nothrow_copy_constructible_v<DATA>) {
+                if (isDataValid(id)) {
+                    *std::launder(reinterpret_cast<DATA*>(&values[static_cast<size_t>(id)])) = data;
+                } else {
+                    new(&values[static_cast<size_t>(id)]) DATA{data};
+                }
+                valids[static_cast<size_t>(id)] |= 1u;
+            }
+
+            DATA& data(ENUM id) noexcept {
+                assert(isDataValid(id));
+                return *std::launder(reinterpret_cast<DATA*>(&values[static_cast<size_t>(id)]));
+            }
+
+            const DATA& data(ENUM id) const noexcept {
+                assert(isDataValid(id));
+                return *std::launder(reinterpret_cast<DATA*>(&values[static_cast<size_t>(id)]));
+            }
+
+            void clear(ENUM id) noexcept {
+                if (isDataValid(id)) {
+                    valids[static_cast<size_t>(id)] = 0;
+                    std::launder(reinterpret_cast<DATA*>(&values[static_cast<size_t>(id)]))->~DATA();
+                }
+            }
+
+            void clear() noexcept {
+                for (int i = 0; i < ENUM_SIZE; ++i) {
+                    clear((ENUM)i);
+                }
             }
 
         private:
-            std::array<std::optional<DATA>, static_cast<size_t>(ENUM_SIZE)> values;
+            std::array<storage_type, static_cast<size_t>(ENUM_SIZE)> values;
+            std::array<unsigned char, static_cast<size_t>(ENUM_SIZE)> valids;
         };
 
         template <typename GROUP, typename... ID_DATA_PAIR>
@@ -444,46 +542,50 @@ namespace cppc
             template <typename ID, typename T> using isConvertibleTo = IsConvertibleToSomethingIn<T, typename DATA<ID>::AvailableValueTypes>;
 
         private:
-            template <typename ID, typename T>
-            class ConfigBoundVariable final {
-            public:
-                ConfigBoundVariable(ConfigImpl& config, GROUP group, ID id)
-                        : config{config}, group{group}, id{id}
-                {}
-                operator T() const { return config.get<T>(group, id); }
-                void update(const T& t) { config.set<T>(group, id, t); }
-            private:
-                ConfigImpl& config;
-                GROUP group;
-                ID id;
-            };
-
             template <typename ID>
             class ConfigValueProxy final {
             public:
-                explicit ConfigValueProxy(ConfigImpl& config, GROUP group, ID id)
+                explicit ConfigValueProxy(ConfigImpl& config, GROUP group, ID id) noexcept
                         : config{config}, group{group}, id{id} {}
-                template <typename T> operator T() const { return config.get<T>(group, id); }
-                template <typename T> ConfigValueProxy& operator=(T&& t) {
-                    config.set<T>(group, id, std::forward<T>(t));
+                template <typename T> operator T() const noexcept(
+#ifdef _MSC_VER
+                noexcept(std::declval<ConfigImpl>().get<T>(std::declval<GROUP>(), std::declval<ID>())))
+#else
+                noexcept(std::declval<ConfigImpl>().template get<T>(std::declval<GROUP>(), std::declval<ID>())))
+#endif
+                { return config.get<T>(group, id); }
+
+                template <typename T> ConfigValueProxy& operator=(T&& t) noexcept(
+#ifdef _MSC_VER
+                noexcept(std::declval<ConfigImpl>().set<T>(std::declval<GROUP>(), std::declval<ID>(), std::forward<T>(std::declval<T&&>()))))
+#else
+                noexcept(std::declval<ConfigImpl>().template set<T>(std::declval<GROUP>(), std::declval<ID>(), std::forward<T>(std::declval<T&&>()))))
+#endif
+                {
+                    config.set(group, id, std::forward<T>(t));
                     return *this;
                 }
-                template <typename T> bool operator==(const T& t) {
+
+                template <typename T> T as() /* TODO: noexcept */ {
+                    return config.get<T>(group, id);
+                }
+
+                template <typename T> bool operator==(const T& t) const {
                     return config.get<T>(group, id) == t;
                 }
-                template <typename T> bool operator!=(const T& t) {
+                template <typename T> bool operator!=(const T& t) const {
                     return config.get<T>(group, id) != t;
                 }
-                template <typename T> bool operator>=(const T& t) {
+                template <typename T> bool operator>=(const T& t) const {
                     return config.get<T>(group, id) >= t;
                 }
-                template <typename T> bool operator<=(const T& t) {
+                template <typename T> bool operator<=(const T& t) const {
                     return config.get<T>(group, id) <= t;
                 }
-                template <typename T> bool operator<(const T& t) {
+                template <typename T> bool operator<(const T& t) const {
                     return config.get<T>(group, id) < t;
                 }
-                template <typename T> bool operator>(const T& t) {
+                template <typename T> bool operator>(const T& t) const {
                     return config.get<T>(group, id) > t;
                 }
             private:
@@ -495,21 +597,21 @@ namespace cppc
             friend class ConfigGroupProxy;
             class ConfigGroupProxy final {
             public:
-                ConfigGroupProxy(ConfigImpl& config, GROUP group) : config{config}, group{group} {}
-                template <typename ID> ConfigValueProxy<ID> operator[](ID id) { return config[std::pair{group, id}]; }
+                ConfigGroupProxy(ConfigImpl& config, GROUP group) noexcept : config{config}, group{group} {}
+                template <typename ID> ConfigValueProxy<ID> operator[](ID id) const noexcept { return config[std::pair{group, id}]; }
             private:
                 ConfigImpl& config;
                 GROUP group;
             };
 
             template <typename TUPLE, size_t I>
-            struct Initializer { static void init(ConfigImpl& config){
+            struct Initializer { static void init(ConfigImpl& config) {
                     config.configValues[I] = new IdHolder<typename std::tuple_element_t<I, TUPLE>::first_type>();
                     Initializer<TUPLE, I-1>::init(config);
                 }};
 
             template <typename TUPLE>
-            struct Initializer<TUPLE, 0> { static void init(ConfigImpl& config){
+            struct Initializer<TUPLE, 0> { static void init(ConfigImpl& config) {
                     config.configValues[0] = new IdHolder<typename std::tuple_element_t<0, TUPLE>::first_type>();
                 }};
 
@@ -566,7 +668,7 @@ namespace cppc
                             auto s = line.substr(1, static_cast<unsigned long long>(found - line.begin() - 1));
                             trim(s);
                             auto g = groupFromString(s);
-                            if (g){
+                            if (g) {
                                 actGroup = static_cast<size_t>(g.value());
                             } else {
                                 error << "Group name - " << s << " is invalid!\n";
@@ -585,17 +687,18 @@ namespace cppc
                                 using ID = typename std::decay_t<decltype(*enumMap)>::enum_type;
 
                                 auto n = idFromString<ID>(s);
-                                if (n){
+                                if (n) {
                                     s = std::string{found + 1, line.end()};
                                     trim(s);
-                                    if (s.length() == 0){
+                                    if (s.length() == 0) {
                                         error << "Line " << lineNumber << " is invalid: missing value!\n";
                                         return;
                                     }
                                     auto opt = DATA<ID>::parse(s);
                                     if (opt) {
-                                        if (overwrite || !getOptionalData(static_cast<GROUP>(actGroup), n.value())) {
-                                            getOptionalData(static_cast<GROUP>(actGroup), n.value()) = opt;
+                                        if (overwrite || !isDataValid((GROUP)actGroup, n.value())) {
+                                            setData((GROUP)actGroup, n.value(), std::move(opt.value()));
+                                            markDataForSave((GROUP)actGroup, n.value());
                                         }
                                     } else {
                                         error << "Line " << lineNumber << " is invalid: value format is not parsable!\n";
@@ -616,15 +719,14 @@ namespace cppc
             }
 
             ConfigImpl& load(const ConfigImpl& config, bool overwrite) {
-                for (size_t i = 0; i < static_cast<size_t>(GROUP_SIZE); ++i){
+                for (size_t i = 0; i < static_cast<size_t>(GROUP_SIZE); ++i) {
                     auto& ihv = configValues[i];
-                    std::visit([&](auto&& enumMap){
+                    std::visit([&](auto&& enumMap) {
                         using ID = typename std::decay_t<decltype(*enumMap)>::enum_type;
-                        for (size_t j = 0; j < static_cast<size_t>(ID_SIZE<ID>); ++j){
-                            auto& oc1 = getOptionalData((GROUP)i, (ID)j);
-                            auto& oc2 = config.getOptionalData((GROUP)i, (ID)j);
-                            if (oc2 && (overwrite || !oc1)){
-                                oc1 = oc2;
+                        for (size_t j = 0; j < static_cast<size_t>(ID_SIZE<ID>); ++j) {
+                            if (config.isDataValid((GROUP)i, (ID)j) && (overwrite || !isDataValid((GROUP)i, (ID)j))) {
+                                setData((GROUP)i, (ID)j, config.data((GROUP)i, (ID)j));
+                                if (config.shouldSaveData((GROUP)i, (ID)j)) markDataForSave((GROUP)i, (ID)j);
                             }
                         }
                     }, ihv);
@@ -632,20 +734,57 @@ namespace cppc
                 return *this;
             }
 
+            ConfigImpl& load(ConfigImpl&& config, bool overwrite) {
+                for (size_t i = 0; i < static_cast<size_t>(GROUP_SIZE); ++i) {
+                    auto& ihv = configValues[i];
+                    std::visit([&](auto&& enumMap) {
+                        using ID = typename std::decay_t<decltype(*enumMap)>::enum_type;
+                        for (size_t j = 0; j < static_cast<size_t>(ID_SIZE<ID>); ++j) {
+                            if (config.isDataValid((GROUP)i, (ID)j) && (overwrite || !isDataValid((GROUP)i, (ID)j))) {
+                                setData((GROUP)i, (ID)j, std::move(config.data((GROUP)i, (ID)j)));
+                                if (config.shouldSaveData((GROUP)i, (ID)j)) markDataForSave((GROUP)i, (ID)j);
+                            }
+                        }
+                    }, ihv);
+                }
+                return *this;
+            }
+
+            template <typename ID>
+            ConfigImpl& commit(GROUP group, ID id) noexcept {
+                markDataForSave(group, id);
+                return *this;
+            }
+
+            template <typename ID>
+            ConfigImpl& commit(ID id) noexcept {
+                return commit((GROUP)0, id);
+            }
+
+            template <typename ID>
+            ConfigImpl& forget(GROUP group, ID id) noexcept {
+                unMarkDataForSave(group, id);
+                return *this;
+            }
+
+            template <typename ID>
+            ConfigImpl& forget(ID id) noexcept {
+                return forget((GROUP)0, id);
+            }
+
             bool save(const std::string& filePath) const {
                 std::ofstream f(filePath);
                 if (!f) return false;
                 f << std::boolalpha;
 
-                for (size_t i = 0; i < static_cast<size_t>(GROUP_SIZE); ++i){
+                for (size_t i = 0; i < static_cast<size_t>(GROUP_SIZE); ++i) {
                     f << '[' << toString(static_cast<GROUP>(i)) << ']' << '\n';
                     auto& ihv = configValues[i];
-                    std::visit([&](auto&& enumMap){
+                    std::visit([&](auto&& enumMap) {
                         using ID = typename std::decay_t<decltype(*enumMap)>::enum_type;
-                        for (size_t j = 0; j < static_cast<size_t>(ID_SIZE<ID>); ++j){
-                            auto& opt = getOptionalData((GROUP)i, (ID)j);
-                            if (opt){
-                                f << toString(static_cast<ID>(j)) << "=" << opt.value().toString() << '\n';
+                        for (size_t j = 0; j < static_cast<size_t>(ID_SIZE<ID>); ++j) {
+                            if (shouldSaveData((GROUP)i, (ID)j)) {
+                                f << toString(static_cast<ID>(j)) << "=" <<  data((GROUP)i, (ID)j).toString() << '\n';
                             }
                         }
                         f << '\n';
@@ -654,53 +793,159 @@ namespace cppc
                 return !!f;
             }
 
+            bool filled() const noexcept {
+                bool valid = true;
+                for (size_t i = 0; i < static_cast<size_t>(GROUP_SIZE) && valid; ++i){
+                    auto& ihv = configValues[i];
+                    std::visit([&](auto&& enumMap) {
+                        using ID = typename std::decay_t<decltype(*enumMap)>::enum_type;
+                        for (size_t j = 0; j < static_cast<size_t>(ID_SIZE<ID>); ++j) {
+                            if (!isDataValid((GROUP)i, (ID)j)) {
+                                valid = false;
+                                return;
+                            }
+                        }
+                    }, ihv);
+                }
+                return valid;
+            }
+
             void setErrorFunction(std::function<void(const std::string&)> errorHandler) {
                 errorFunction = std::move(errorHandler);
             }
 
-            template <typename ID>
-            void clear(GROUP group, ID id) {
-                getOptionalData(group, id).reset();
-            }
-
-            void clear() {
-                for (auto& v : configValues){
-                    std::visit([](auto&& enumMap){
-                        enumMap->clear();
-                    }, v);
-                }
-            }
-
             template <typename T, typename ID>
-            ConfigBoundVariable<ID, T> bind(GROUP groupName, ID configName) {
-                return ConfigBoundVariable<ID, T>{*this, groupName, configName};
-            }
-
-            template <typename T, typename ID>
-            ConfigBoundVariable<ID, T> bind(ID configName) {
-                return bind<T>(static_cast<GROUP>(0), configName);
-            }
-
-            template <typename T, typename ID>
-            T get(GROUP group, ID id) const {
+            T get(GROUP group, ID id) const noexcept(noexcept(T(std::declval<typename isConvertibleFrom<ID, T>::type>()))) {
                 static_assert(isConvertibleFrom<ID, T>::value, "incompatible types");
-                try {
 #ifdef _MSC_VER
-                    return T(getOptionalData(group, id).value().getValueField<typename isConvertibleFrom<ID, T>::type>());
+                return T(data(group, id).getValueField<typename isConvertibleFrom<ID, T>::type>());
 #else
-                    return T(getOptionalData(group, id).value().template getValueField<typename isConvertibleFrom<ID, T>::type>());
+                return T(data(group, id).template getValueField<typename isConvertibleFrom<ID, T>::type>());
 #endif
-                } catch (const std::bad_optional_access&) {
-                    throw std::runtime_error("<" + toString(group) + ", " + toString(id) + "> is not found!");
-                } catch (...) {
-                    throw std::runtime_error("<" + toString(group) + ", " + toString(id) + "> is accessed with bad type!");
-                }
             }
 
             template <typename T, typename ID>
-            T get(ID id) const {
+            T get(ID id) const noexcept(noexcept(T(std::declval<typename isConvertibleFrom<ID, T>::type>()))) {
                 return get<T>(static_cast<GROUP>(0), id);
             }
+
+            template <typename ID>
+            ConfigValueProxy<ID> operator[](std::pair<GROUP, ID> idx) noexcept {
+                return ConfigValueProxy<ID>{*this, idx.first, idx.second};
+            }
+
+            ConfigGroupProxy operator[](GROUP group) noexcept {
+                return ConfigGroupProxy{*this, group};
+            }
+
+            template <typename ID>
+            ConfigValueProxy<ID> operator[](ID id) noexcept {
+                return ConfigValueProxy<ID>{*this, static_cast<GROUP>(0), id};
+            }
+
+            template <typename T, typename ID>
+            void set(GROUP group, ID id, T&& t) noexcept(noexcept(std::declval<ConfigImpl>().setData(std::declval<GROUP>(), std::declval<ID>(), DATA<ID>{(typename isConvertibleTo<ID, T>::type)std::forward<T>(std::declval<T&&>())}))) {
+                static_assert(isConvertibleTo<ID, T>::value, "incompatible types");
+                setData(group, id, DATA<ID>{(typename isConvertibleTo<ID, T>::type)std::forward<T>(t)});
+            }
+
+            template <typename T, typename ID>
+            void set(ID id, T&& t) noexcept(noexcept(std::declval<ConfigImpl>().set(std::declval<GROUP>(), std::declval<ID>(), std::forward<T>(std::declval<T&&>())))) {
+                set(static_cast<GROUP>(0), id, std::forward<T>(t));
+            }
+
+            template <typename T, typename ID>
+            void setIfEmpty(GROUP group, ID id, T&& t) noexcept(noexcept(std::declval<ConfigImpl>().set(std::declval<GROUP>(), std::declval<ID>(), std::forward<T>(std::declval<T&&>())))) {
+                static_assert(isConvertibleTo<ID, T>::value, "incompatible types");
+                if (!isDataValid(group, id)) {
+                    set(group, id, std::forward<T>(t));
+                }
+            }
+
+            template <typename T, typename ID>
+            void setIfEmpty(ID id, T&& t) noexcept(noexcept(std::declval<ConfigImpl>().setIfEmpty(std::declval<GROUP>(), std::declval<ID>()))) {
+                setIfEmpty(static_cast<GROUP>(0), id, std::forward<T>(t));
+            }
+
+        private: // Helper functions
+            std::optional<GROUP> groupFromString(const std::string& str) noexcept {
+                auto& map = getNameToType<GROUP, GROUP::_SIZE>();
+                auto found = map.find(str);
+                if (found == map.end()) return std::nullopt;
+                return std::make_optional(found->second);
+            }
+
+            template <typename ID>
+            std::optional<ID> idFromString(const std::string& str) noexcept {
+                auto& map = getNameToType<ID, ID::_SIZE>();
+                auto found = map.find(str);
+                if (found == map.end()) return std::nullopt;
+                return std::make_optional(found->second);
+            }
+
+            std::string toString(GROUP group) const {
+                return getTypeToName<GROUP, (GROUP)GROUP_SIZE>()[static_cast<size_t>(group)];
+            }
+
+            template <typename ID>
+            std::string toString(ID id) const {
+                return getTypeToName<ID>()[static_cast<size_t>(id)];
+            }
+
+            template <typename ID>
+            void setData(GROUP group, ID id, DATA<ID>&& data) noexcept(std::is_nothrow_move_constructible_v<DATA<ID>>) {
+                std::get<IdHolder<ID>*>(configValues[(size_t)group])->setData(id, std::move(data));
+            }
+
+            template <typename ID>
+            void setData(GROUP group, ID id, const DATA<ID>& data) noexcept(std::is_nothrow_copy_constructible_v<DATA<ID>>) {
+                std::get<IdHolder<ID>*>(configValues[(size_t)group])->setData(id, data);
+            }
+
+            template <typename ID>
+            void markDataForSave(GROUP group, ID id) noexcept {
+                return std::get<IdHolder<ID>*>(configValues[(size_t)group])->markDataForSave(id);
+            }
+
+            template <typename ID>
+            void unMarkDataForSave(GROUP group, ID id) noexcept {
+                return std::get<IdHolder<ID>*>(configValues[(size_t)group])->unMarkDataForSave(id);
+            }
+
+            template <typename ID>
+            bool shouldSaveData(GROUP group, ID id) const noexcept {
+                return std::get<IdHolder<ID>*>(configValues[(size_t)group])->shouldSaveData(id);
+            }
+
+            template <typename ID>
+            bool isDataValid(GROUP group, ID id) const noexcept {
+                return std::get<IdHolder<ID>*>(configValues[(size_t)group])->isDataValid(id);
+            }
+
+            template <typename ID>
+            DATA<ID>& data(GROUP group, ID id) noexcept {
+                return std::get<IdHolder<ID>*>(configValues[(size_t)group])->data(id);
+            }
+
+            template <typename ID>
+            const DATA<ID>& data(GROUP group, ID id) const noexcept {
+                return std::get<IdHolder<ID>*>(configValues[(size_t)group])->data(id);
+            }
+
+/*        private: // These functions and classes are probably not useful so I hid them
+            template <typename ID, typename T>
+            class ConfigBoundVariable final {
+            public:
+                ConfigBoundVariable(ConfigImpl& config, GROUP group, ID id)
+                        : config{config}, group{group}, id{id}
+                {}
+                operator T() const { return config.get<T>(group, id); }
+                void update(const T& t) { config.set<T>(group, id, t); }
+            private:
+                ConfigImpl& config;
+                GROUP group;
+                ID id;
+            };
 
             template <typename T, typename ID>
             std::optional<T> tryGet(GROUP group, ID id) const {
@@ -741,96 +986,42 @@ namespace cppc
                 return mustGet<T>(static_cast<GROUP>(0), id);
             }
 
-            template <typename ID>
-            ConfigValueProxy<ID> operator[](std::pair<GROUP, ID> idx) {
-                return ConfigValueProxy<ID>{*this, idx.first, idx.second};
-            }
-
-            ConfigGroupProxy operator[](GROUP group) {
-                return ConfigGroupProxy{*this, group};
-            }
-
-            template <typename ID>
-            ConfigValueProxy<ID> operator[](ID id) {
-                return ConfigValueProxy<ID>{*this, static_cast<GROUP>(0), id};
+            template <typename T, typename ID>
+            ConfigBoundVariable<ID, T> bind(GROUP groupName, ID configName) {
+                return ConfigBoundVariable<ID, T>{*this, groupName, configName};
             }
 
             template <typename T, typename ID>
-            void set(GROUP group, ID id, const T& t) {
-                static_assert(isConvertibleTo<ID, T>::value, "incompatible types");
-                auto& opt = getOptionalData(group, id);
-                if (!opt){
-                    opt = DATA<ID>{(typename isConvertibleTo<ID, T>::type)t};
-                } else {
-                    opt.value().setValueField((typename isConvertibleTo<ID, T>::type)t);
+            ConfigBoundVariable<ID, T> bind(ID configName) {
+                return bind<T>(static_cast<GROUP>(0), configName);
+            }
+
+            template <typename ID>
+            void clear(GROUP group, ID id) {
+                std::visit([&](auto&& enumMap){
+                    enumMap->clear(group, id);
+                }, configValues[static_cast<size_t>(group)]);
+            }
+
+            void clear() {
+                for (auto& v : configValues){
+                    std::visit([](auto&& enumMap){
+                        enumMap->clear();
+                    }, v);
                 }
             }
 
-            template <typename T, typename ID>
-            void set(ID id, const T& t) {
-                set<T>(static_cast<GROUP>(0), id, t);
-            }
-
-            template <typename T, typename ID>
-            void setIfEmpty(GROUP group, ID id, const T& t) {
-                static_assert(isConvertibleTo<ID, T>::value, "incompatible types");
-                auto& opt = getOptionalData(group, id);
-                if (!opt){
-                    opt = DATA<ID>{(typename isConvertibleTo<ID, T>::type)t};
-                }
-            }
-
-            template <typename T, typename ID>
-            void setIfEmpty(ID id, const T& t) {
-                setIfEmpty<T>(static_cast<GROUP>(0), id, t);
-            }
-
             template <typename ID>
-            std::optional<std::reference_wrapper<DATA<ID>>> getData(GROUP group, ID id) {
+            std::optional<std::reference_wrapper<DATA<ID>>> getData(GROUP group, ID id) noexcept(std::reference_wrapper<DATA<ID>>{std::declval<DATA<ID>>()}) {
                 auto& opt = getOptionalData(group, id);
                 return opt ? std::make_optional(std::reference_wrapper<DATA<ID>>{opt.value()}) : std::nullopt;
             }
 
             template <typename ID>
-            std::optional<std::reference_wrapper<DATA<ID>>> getData(ID id) {
+            std::optional<std::reference_wrapper<DATA<ID>>> getData(ID id) noexcept(getData(std::declval<GROUP>(), std::declval<ID>())) {
                 return getData(static_cast<GROUP>(0), id);
             }
-
-        private:
-            std::optional<GROUP> groupFromString(const std::string& str){
-                auto& map = getNameToType<GROUP, GROUP::_SIZE>();
-                auto found = map.find(str);
-                if (found == map.end()) return std::nullopt;
-                return std::make_optional(found->second);
-            }
-
-            template <typename ID>
-            std::optional<ID> idFromString(const std::string& str){
-                auto& map = getNameToType<ID, ID::_SIZE>();
-                auto found = map.find(str);
-                if (found == map.end()) return std::nullopt;
-                return std::make_optional(found->second);
-            }
-
-            std::string toString(GROUP group) const {
-                return getTypeToName<GROUP, (GROUP)GROUP_SIZE>()[static_cast<size_t>(group)];
-            }
-
-            template <typename ID>
-            std::string toString(ID id) const {
-                return getTypeToName<ID>()[static_cast<size_t>(id)];
-            }
-
-            template <typename ID>
-            std::optional<DATA<ID>>& getOptionalData(GROUP group, ID id) {
-                return std::get<IdHolder<ID>*>(configValues[(size_t)group])->getOptionalData(id);
-            }
-
-            template <typename ID>
-            const std::optional<DATA<ID>>& getOptionalData(GROUP group, ID id) const {
-                return std::get<IdHolder<ID>*>(configValues[(size_t)group])->getOptionalData(id);
-            }
-
+*/
         private:
             GroupHolder configValues;
             std::function<void(const std::string&)> errorFunction = [](const auto&) {};
@@ -864,7 +1055,6 @@ namespace cppc
 
     template <typename T1, typename T2 = detail::DefaultGroup, typename... TS>
     using Config = typename detail::ConfigImplTypeSwizzler<void, T1, T2, TS...>::type;
-
 }
 
 #endif //CPP_CONFIG_CONFIG_HPP
